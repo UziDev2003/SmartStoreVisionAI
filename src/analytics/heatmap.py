@@ -19,6 +19,7 @@ class HeatmapGenerator:
         self.grid_w = width // grid_size
         self.grid_h = height // grid_size
         self.heatmap = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        self.seen_track_ids = set()
         self.total_footfall = 0
         self.peak_density = 0.0
     
@@ -29,6 +30,8 @@ class HeatmapGenerator:
             gx, gy = int(cx // self.grid_size), int(cy // self.grid_size)
             if 0 <= gy < self.grid_h and 0 <= gx < self.grid_w:
                 self.heatmap[gy, gx] += 1
+            if hasattr(t, 'track_id') and t.track_id not in self.seen_track_ids:
+                self.seen_track_ids.add(t.track_id)
                 self.total_footfall += 1
         self.peak_density = max(self.peak_density, self.heatmap.max())
         return self.heatmap.copy()
@@ -82,5 +85,6 @@ class HeatmapGenerator:
     
     def reset(self):
         self.heatmap.fill(0)
+        self.seen_track_ids.clear()
         self.total_footfall = 0
         self.peak_density = 0.0

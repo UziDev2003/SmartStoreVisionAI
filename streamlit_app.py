@@ -6,7 +6,8 @@ from datetime import datetime
 st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
 st.markdown("""<style>
 .stMetric>div:first-child{color:#00d9ff!important;font-size:1.5rem!important}
-.zone{background:#0f3460;padding:10px;border-radius:8px;margin:5px 0}
+.stMetric>div:nth-child(2){color:#ffffff!important}
+.zone{background:#0f3460;color:#ffffff;padding:10px;border-radius:8px;margin:5px 0}
 </style>""", unsafe_allow_html=True)
 
 import sys
