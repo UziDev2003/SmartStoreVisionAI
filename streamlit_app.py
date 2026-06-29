@@ -23,6 +23,12 @@ from src.alerts.alert_manager import AlertManager
 def get_det(ms='s', cf=0.5, dv='cpu'): return YOLODetector(model_size=ms, confidence_threshold=cf, device=dv)
 
 def mk_zones():
+    from src.utils.config import load_config
+    try:
+        data = load_config(str(Path(__file__).parent / "config" / "zones.yaml"))
+        if data and "zones" in data:
+            return [Zone(z["id"], z["name"], z["type"], [(p[0],p[1]) for p in z["polygon"]], z.get("capacity",10), z.get("dwell_threshold",120)) for z in data["zones"]]
+    except: pass
     return [Zone("e","Entrance","entrance",[(100,400),(300,400),(300,600),(100,600)],10),
             Zone("c","Checkout","checkout",[(500,400),(700,400),(700,600),(500,600)],8),
             Zone("r","Restricted","restricted",[(800,100),(950,100),(950,250),(800,250)],0)]
