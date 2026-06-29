@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Data
+data/snapshots/*.jpg
+data/*.db
+data/*.csv
+data/reports/
+
+# Models
+models/*.pt
+models/*.onnx
+
+# Images
+*.mp4
+*.avi
+*.mov
+*.mkv
+!data/demo.mp4
+
+# OS
+.DS_Store
+Thumbs.db

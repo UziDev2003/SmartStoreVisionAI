@@ -1,0 +1,44 @@
+# Smart Store Vision AI - Camera Configuration
+
+cameras:
+  - stream_id: "cam_01"
+    source: "rtsp://192.168.1.100:554/stream1"
+    name: "Store Entrance"
+    enabled: true
+    fps: 30
+    resolution:
+      width: 1920
+      height: 1080
+
+  - stream_id: "cam_02"
+    source: "rtsp://192.168.1.101:554/stream1"
+    name: "Checkout Area"
+    enabled: true
+    fps: 30
+    resolution:
+      width: 1920
+      height: 1080
+
+  - stream_id: "cam_03"
+    source: "rtsp://192.168.1.102:554/stream1"
+    name: "Main Floor"
+    enabled: true
+    fps: 30
+    resolution:
+      width: 1920
+      height: 1080
+
+  - stream_id: "cam_04"
+    source: "rtsp://192.168.1.103:554/stream1"
+    name: "Restricted Area"
+    enabled: true
+    fps: 30
+    resolution:
+      width: 1920
+      height: 1080
+
+# Demo mode - use video file instead of RTSP
+demo:
+  enabled: true
+  video_path: "data/demo.mp4"
+  loop: true

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Store Vision AI</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; }
+        .header { background: #16213e; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f3460; }
+        .header h1 { color: #00d9ff; }
+        .main { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding: 20px; }
+        .video-section { background: #16213e; border-radius: 10px; overflow: hidden; }
+        .video-container { position: relative; width: 100%; background: #000; }
+        .video-container img { width: 100%; display: block; }
+        .video-overlay { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; }
+        .sidebar { display: flex; flex-direction: column; gap: 15px; }
+        .card { background: #16213e; border-radius: 10px; padding: 15px; }
+        .card h3 { color: #00d9ff; margin-bottom: 10px; border-bottom: 1px solid #0f3460; padding-bottom: 8px; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .stat-box { background: #0f3460; padding: 10px; border-radius: 5px; text-align: center; }
+        .stat-box .value { font-size: 1.5rem; font-weight: bold; color: #00d9ff; }
+        .stat-box .label { font-size: 0.75rem; color: #aaa; }
+        .zone-item { background: #0f3460; padding: 10px; border-radius: 5px; margin-bottom: 5px; display: flex; justify-content: space-between; }
+        .zone-item span:last-child { background: #00d9ff; color: #000; padding: 2px 10px; border-radius: 10px; font-weight: bold; }
+        .zone-item.restricted span:last-child { background: #ff4757; }
+        .alert-item { background: #0f3460; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 3px solid #00d9ff; }
+        .alert-item.high { border-color: #ff4757; }
+        .alert-item .time { font-size: 0.7rem; color: #888; }
+        .alert-item .msg { font-size: 0.85rem; margin-top: 3px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏪 Smart Store Vision AI</h1>
+        <div id="fpsDisplay">-- FPS</div>
+    </div>
+    <div class="main">
+        <div class="video-section">
+            <div class="video-container">
+                <img src="/video_feed" id="videoStream" alt="Video">
+                <div class="video-overlay">
+                    <div id="trackCount">Tracks: --</div>
+                    <div id="occupancyCount">Occupancy: --</div>
+                </div>
+            </div>
+        </div>
+        <div class="sidebar">
+            <div class="card">
+                <h3>📊 Stats</h3>
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="value" id="frames">0</div><div class="label">Frames</div></div>
+                    <div class="stat-box"><div class="value" id="ms">0</div><div class="label">ms/frame</div></div>
+                    <div class="stat-box"><div class="value" id="footfall">0</div><div class="label">Footfall</div></div>
+                    <div class="stat-box"><div class="value" id="alerts">0</div><div class="label">Alerts</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <h3>📍 Zones</h3>
+                <div id="zoneList"></div>
+            </div>
+            <div class="card">
+                <h3>⚠️ Alerts</h3>
+                <div id="alertList"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function update() {
+            try {
+                const r = await fetch('/api/stats'); const d = await r.json();
+                document.getElementById('fpsDisplay').textContent = `${(d.detector?.fps||0).toFixed(1)} FPS`;
+                document.getElementById('frames').textContent = d.detector?.frames_processed || 0;
+                document.getElementById('ms').textContent = (d.detector?.avg_inference_ms||0).toFixed(1);
+                document.getElementById('footfall').textContent = d.heatmap?.footfall || 0;
+                document.getElementById('alerts').textContent = d.alerts?.total || 0;
+                const occ = Object.values(d.occupancy||{}).reduce((a,b)=>a+b,0);
+                document.getElementById('trackCount').textContent = `Tracks: ${d.tracker?.active_tracks||0}`;
+                document.getElementById('occupancyCount').textContent = `Occupancy: ${occ}`;
+            } catch(e) { console.error(e); }
+            
+            try {
+                const r = await fetch('/api/zones'); const z = await r.json();
+                document.getElementById('zoneList').innerHTML = z.map(x=>`<div class="zone-item ${x.type}"><span>${x.name}</span><span>${x.occupancy}${x.capacity?'/'+x.capacity:''}</span></div>`).join('');
+            } catch(e) {}
+            
+            try {
+                const r = await fetch('/api/alerts?limit=5'); const a = await r.json();
+                document.getElementById('alertList').innerHTML = a.map(x=>`<div class="alert-item ${x.severity}"><div class="time">${new Date(x.timestamp*1000).toLocaleTimeString()}</div><div class="msg">${x.message}</div></div>`).join('');
+            } catch(e) {}
+        }
+        setInterval(update, 1000);
+    </script>
+</body>
+</html>

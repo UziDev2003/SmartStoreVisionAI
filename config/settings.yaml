@@ -1,0 +1,75 @@
+# Smart Store Vision AI - System Settings
+
+# Detection Settings
+detection:
+  model_size: "s"  # n, s, m, l, x (larger = more accurate but slower)
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  device: "cuda"  # cuda, cpu, mps
+  classes:
+    - 0  # person only for privacy compliance
+
+# Tracking Settings
+tracking:
+  track_thresh: 0.5
+  track_buffer: 30  # frames to keep lost tracks
+  match_thresh: 0.8
+  frame_rate: 30
+
+# Alert Settings
+alerts:
+  rate_limit: 30  # seconds between same-type alerts
+  max_alerts: 1000
+  snapshot_retention_days: 30
+  
+  thresholds:
+    loitering: 120  # seconds
+    congestion: 0.8  # 80% capacity
+    intrusion: 0  # any presence
+
+# Analytics Settings
+analytics:
+  heatmap:
+    enabled: true
+    update_interval: 1.0  # seconds
+    export_interval: 300  # 5 minutes
+  
+  occupancy:
+    update_interval: 1.0
+  
+  reports:
+    export_format: "csv"  # csv, pdf
+    daily_schedule: "02:00"  # UTC
+
+# Performance Settings
+performance:
+  target_fps: 25
+  max_streams: 8
+  use_tensorrt: false  # Enable for Jetson deployment
+  batch_processing: false
+
+# Dashboard Settings
+dashboard:
+  host: "0.0.0.0"
+  port: 5000
+  debug: false
+  secret_key: "your-secret-key-here"
+  
+  update_intervals:
+    stream: 100  # ms
+    stats: 1000  # ms
+    alerts: 500  # ms
+
+# Storage Settings
+storage:
+  snapshots_dir: "data/snapshots"
+  alerts_db: "data/alerts.db"
+  reports_dir: "data/reports"
+  max_storage_gb: 50
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/smartstore.log"
+  max_size_mb: 100
+  backup_count: 5

@@ -1,0 +1,65 @@
+# Zone Definitions for Smart Store Vision AI
+# Coordinates are relative to frame resolution (1920x1080)
+
+zones:
+  - id: "entrance"
+    name: "Store Entrance"
+    type: "entrance"
+    capacity: 10
+    dwell_threshold: 300  # 5 minutes
+    polygon:
+      - [100, 800]
+      - [400, 800]
+      - [400, 1080]
+      - [100, 1080]
+
+  - id: "checkout"
+    name: "Checkout Counters"
+    type: "checkout"
+    capacity: 15
+    dwell_threshold: 180  # 3 minutes
+    polygon:
+      - [700, 900]
+      - [1200, 900]
+      - [1200, 1080]
+      - [700, 1080]
+
+  - id: "restricted_backroom"
+    name: "Backroom (Restricted)"
+    type: "restricted"
+    capacity: 0  # No occupancy allowed
+    dwell_threshold: 0  # Any presence is an alert
+    polygon:
+      - [1600, 100]
+      - [1900, 100]
+      - [1900, 400]
+      - [1600, 400]
+
+  - id: "restricted_emergency"
+    name: "Emergency Exit"
+    type: "restricted"
+    capacity: 0
+    dwell_threshold: 0
+    polygon:
+      - [0, 0]
+      - [200, 0]
+      - [200, 300]
+      - [0, 300]
+
+  - id: "high_value"
+    name: "High-Value Display"
+    type: "general"
+    capacity: 5
+    dwell_threshold: 120  # 2 minutes - potential shoplifter
+    polygon:
+      - [800, 400]
+      - [1100, 400]
+      - [1100, 700]
+      - [800, 700]
+
+# Heatmap settings
+heatmap:
+  grid_size: 10  # pixels per grid cell
+  decay_factor: 0.995  # temporal decay (0-1)
+  blur_kernel: 15  # smoothing kernel size
+  normalize: true
