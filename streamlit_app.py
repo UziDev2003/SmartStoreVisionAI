@@ -10,6 +10,7 @@ Adds tabs:
 """
 import streamlit as st
 import cv2, time, tempfile
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
@@ -44,6 +45,13 @@ from src.utils.zone_io import load_zones, save_zones, list_runtime_zone_files
 from dashboard.polygon_editor import render as render_polygon_editor
 from dashboard.alerts_panel import render as render_alerts_panel
 from dashboard.threshold_tuner import render as render_threshold_tuner
+from dashboard.advanced_analytics import (
+    render as render_advanced_analytics,
+    _get_preprocessor, _get_bg_subtractor, _get_line_detector,
+    _get_queue_detector, _get_object_detector, _get_face_blurrer,
+    _get_video_clipper, _get_pose_detectors,
+)
+from src.analytics.pose_detectors import PoseEvent
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +135,9 @@ with st.sidebar:
     st.caption("Tip: use the Zone Editor tab to draw zones on a video frame.")
 
 # Tabs
-tab_live, tab_zones, tab_sus, tab_tune, tab_dash = st.tabs(
-    ["📹 Live", "🗺️ Zone Editor", "🚨 Suspicious Activity",
-     "🎛️ Tuner", "📊 Dashboard"]
+tab_live, tab_zones, tab_adv, tab_sus, tab_tune, tab_dash = st.tabs(
+    ["📹 Live", "🗺️ Zone Editor", "🛠️ Advanced",
+     "🚨 Activity", "🎛️ Tuner", "📊 Dashboard"]
 )
 
 # --- Tab: Live ---
@@ -187,6 +195,18 @@ with tab_live:
                     st.session_state["am"] = AlertManager()
                     st.session_state["sus_detector"] = _build_suspicious_detector(enable_pose)
                     st.session_state["activities_log"] = []
+                    st.session_state["last_queue_status"] = []
+                    st.session_state["last_object_events"] = []
+
+                    # Build advanced detectors
+                    preproc = _get_preprocessor() if st.session_state.get("pp_enabled", True) else None
+                    bg_sub = _get_bg_subtractor()
+                    line_det = _get_line_detector()
+                    queue_det = _get_queue_detector()
+                    olb_det, orm_det, obj_shelves = _get_object_detector()
+                    face_blur = _get_face_blurrer()
+                    video_clip = _get_video_clipper()
+                    gest_d, fall_d, fight_d = _get_pose_detectors()
 
                     trk = ByteTracker()
                     bhv = BehaviorDetector(loiter_threshold=loiter,
@@ -201,12 +221,83 @@ with tab_live:
                         fc += 1
                         fr = cv2.resize(fr, (960, 540))
                         ts = time.time()
+                        # 1) Optional frame preprocessing
+                        if preproc is not None:
+                            try:
+                                fr = preproc(fr)
+                            except Exception:
+                                pass
+                        # 2) Optional face blur (privacy)
+                        if face_blur is not None:
+                            try:
+                                fr = face_blur.blur(fr)
+                            except Exception:
+                                pass
+                        # 3) Optional video clipper buffer
+                        if video_clip is not None:
+                            try:
+                                video_clip.add_frame(fr, ts)
+                            except Exception:
+                                pass
+                        # 4) Optional background subtraction
+                        bg_stats = None
+                        if bg_sub is not None:
+                            try:
+                                bg_stats = bg_sub.apply(fr)
+                            except Exception:
+                                bg_stats = None
                         dets = det.detect(fr)
                         res = trk.update(fr, dets, ts)
                         st.session_state["zA"].update(res.tracks, ts)
                         st.session_state["hm"].update(res.tracks, ts)
                         cfg = {z.zone_id: {"name": z.name, "dwell_threshold": z.dwell_threshold}
                                for z in st.session_state["zones"]}
+                        # Line crossing
+                        if line_det is not None:
+                            try:
+                                line_det.update(res.tracks, ts)
+                            except Exception:
+                                pass
+                        # Queue detection
+                        if queue_det is not None:
+                            try:
+                                st.session_state["last_queue_status"] = queue_det.update(
+                                    res.tracks, st.session_state["zA"].zone_occ, ts)
+                            except Exception:
+                                pass
+                        # Object monitor
+                        obj_events = []
+                        if olb_det is not None and obj_shelves:
+                            try:
+                                obj_events.extend(olb_det.update(
+                                    fr, res.tracks,
+                                    st.session_state["zA"].zone_occ, obj_shelves, ts))
+                            except Exception:
+                                pass
+                        if orm_det is not None and obj_shelves:
+                            try:
+                                obj_events.extend(orm_det.update(
+                                    fr, res.tracks,
+                                    st.session_state["zA"].zone_occ, obj_shelves, ts))
+                            except Exception:
+                                pass
+                        if obj_events:
+                            st.session_state["last_object_events"].extend(obj_events)
+                            st.session_state["last_object_events"] = st.session_state["last_object_events"][-200:]
+                        # Pose detectors (gesture/fall/fight)
+                        pose_ests = {}
+                        if enable_pose and st.session_state.get("pose_analyzer"):
+                            try:
+                                pose_ests = st.session_state["pose_analyzer"].estimate(
+                                    fr, res.tracks) or {}
+                            except Exception:
+                                pose_ests = {}
+                        for ev in (gest_d.update(pose_ests, res.tracks, ts) if gest_d else []):
+                            st.session_state["activities_log"].append(ev)
+                        for ev in (fall_d.update(res.tracks, pose_ests, ts) if fall_d else []):
+                            st.session_state["activities_log"].append(ev)
+                        for ev in (fight_d.update(res.tracks, pose_ests, ts) if fight_d else []):
+                            st.session_state["activities_log"].append(ev)
                         # Suspicious activity
                         sus_d = st.session_state["sus_detector"]
                         if sus_d is not None:
@@ -222,6 +313,12 @@ with tab_live:
                                     track = next((t for t in res.tracks if t.track_id == a.track_id), None)
                                     bbox = track.bbox if track else None
                                     st.session_state["am"].create_from_activity(a, "v1", fr, bbox)
+                                    # Save video clip on alert
+                                    if video_clip is not None:
+                                        try:
+                                            video_clip.save_clip(a.alert_id, fr)
+                                        except Exception:
+                                            pass
                                 st.session_state["activities_log"].extend(activities)
                                 if len(st.session_state["activities_log"]) > 500:
                                     st.session_state["activities_log"] = st.session_state["activities_log"][-500:]
@@ -240,6 +337,41 @@ with tab_live:
                         out = st.session_state["zA"].draw_zones(out)
                         if show_hm:
                             out = st.session_state["hm"].get_overlay(out, 0.3)
+                        # Optional: draw BG mask in corner
+                        if bg_stats is not None and bg_stats.fg_mask is not None and bg_stats.fg_mask.size > 0:
+                            try:
+                                small = cv2.resize(bg_stats.fg_mask, (160, 90))
+                                rgb_mask = cv2.applyColorMap(small, cv2.COLORMAP_JET)
+                                out[0:90, out.shape[1]-160:out.shape[1]] = rgb_mask
+                                cv2.putText(out, f"Motion: {bg_stats.motion_density*100:.0f}%",
+                                            (out.shape[1]-160, 105),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+                            except Exception:
+                                pass
+                        # Draw line zones
+                        if line_det is not None:
+                            for line in line_det.lines.values():
+                                try:
+                                    cv2.line(out, line.p1, line.p2, (0, 255, 255), 2)
+                                    cv2.putText(out, line.name, line.p1,
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                                except Exception:
+                                    pass
+                        # Draw queue polygons
+                        if queue_det is not None:
+                            for q in queue_det.queues.values():
+                                try:
+                                    pts = np.array(q.polygon, dtype=np.int32)
+                                    cv2.polylines(out, [pts], True, (255, 200, 0), 2)
+                                except Exception:
+                                    pass
+                        # Draw shelf polygons (object monitor)
+                        for s in obj_shelves:
+                            try:
+                                pts = np.array(s.polygon, dtype=np.int32)
+                                cv2.polylines(out, [pts], True, (200, 100, 200), 2)
+                            except Exception:
+                                pass
                         s_stats = det.get_performance_stats()
                         cv2.putText(out,
                                     f"FPS:{s_stats['fps']:.0f} T:{len(res.tracks)} F:{st.session_state['hm'].total_footfall}",
@@ -318,6 +450,10 @@ with tab_zones:
     else:
         st.caption("No runtime zone files yet.")
 
+# --- Tab: Advanced Analytics ---
+with tab_adv:
+    render_advanced_analytics()
+
 # --- Tab: Suspicious Activity ---
 with tab_sus:
     st.markdown("### 🚨 Suspicious Activity Feed")
@@ -326,6 +462,39 @@ with tab_sus:
     cutoff = time.time() - window
     activities = [a for a in activities if a.timestamp >= cutoff]
     render_alerts_panel(activities)
+
+    # Line crossing counts
+    line_det = _get_line_detector()
+    if line_det is not None:
+        st.markdown("---")
+        st.markdown("### ➡️ Line Crossing Counts")
+        counts = line_det.get_counts()
+        if counts:
+            for (lid, d), c in counts.items():
+                st.markdown(f"- **{lid}** ({d}): `{c}`")
+        else:
+            st.caption("No crossings yet.")
+
+    # Queue status
+    queue_det = _get_queue_detector()
+    if queue_det is not None and st.session_state.get("last_queue_status"):
+        st.markdown("---")
+        st.markdown("### 🧍 Queue Status")
+        for s in st.session_state["last_queue_status"]:
+            color = "🟢" if not s.is_queue else "🟠" if s.length < 4 else "🔴"
+            st.markdown(
+                f"{color} **{s.name}** — {s.length} ppl, "
+                f"est wait **{s.estimated_wait_seconds:.0f}s**, "
+                f"avg **{s.avg_wait_seconds:.0f}s**"
+            )
+
+    # Object monitor events
+    if st.session_state.get("last_object_events"):
+        st.markdown("---")
+        st.markdown("### 📦 Object Monitor Events")
+        for e in st.session_state["last_object_events"][-10:]:
+            icon = "🟡" if e.event_type == "object_left" else "🔴"
+            st.markdown(f"{icon} {e.message}")
 
 # --- Tab: Tuner ---
 with tab_tune:
@@ -347,3 +516,34 @@ with tab_dash:
                       if a.timestamp >= time.time() - 300))
     else:
         st.info("Run the live analysis to populate dashboard stats.")
+
+    st.markdown("---")
+    st.markdown("### 📦 Module Status")
+    cm1, cm2, cm3 = st.columns(3)
+    cm1.markdown("**Detection / Tracking**")
+    cm1.markdown("- ✅ YOLOv8 person detection")
+    cm1.markdown("- ✅ ByteTrack tracking")
+    cm1.markdown("- ✅ Re-ID (optional)")
+    cm1.markdown("- ✅ Heatmap / footfall")
+    cm2.markdown("**Advanced Analytics**")
+    cm2.markdown(f"- {'✅' if st.session_state.get('pp_enabled', True) else '⬜'} Frame preprocessor")
+    cm2.markdown(f"- {'✅' if st.session_state.get('bg_enabled') else '⬜'} Background subtraction")
+    cm2.markdown(f"- {'✅' if st.session_state.get('line_enabled') else '⬜'} Line crossing")
+    cm2.markdown(f"- {'✅' if st.session_state.get('queue_enabled') else '⬜'} Queue detection")
+    cm2.markdown(f"- {'✅' if st.session_state.get('obj_enabled') else '⬜'} Object monitor")
+    cm3.markdown("**Privacy / Output**")
+    cm3.markdown(f"- {'✅' if st.session_state.get('face_blur_enabled') else '⬜'} Face blur")
+    cm3.markdown(f"- {'✅' if st.session_state.get('clip_enabled') else '⬜'} Video clipper")
+    cm3.markdown(f"- {'✅' if st.session_state.get('pose_gesture') else '⬜'} Gesture detection")
+    cm3.markdown(f"- {'✅' if st.session_state.get('pose_fall') else '⬜'} Fall detection")
+    cm3.markdown(f"- {'✅' if st.session_state.get('pose_fight') else '⬜'} Fight detection")
+
+    # Saved clips
+    clips_dir = Path("data/clips")
+    if clips_dir.exists():
+        clips = sorted(clips_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if clips:
+            st.markdown("---")
+            st.markdown("### 🎥 Recent Clips")
+            for c in clips[:5]:
+                st.markdown(f"- `{c.name}` ({c.stat().st_size // 1024} KB)")
