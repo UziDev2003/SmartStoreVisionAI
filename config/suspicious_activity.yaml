@@ -1,0 +1,88 @@
+# Suspicious Activity Detection Configuration
+# All thresholds, cooldowns, and toggles live here.
+# This file is read by SuspiciousActivityDetector.from_config().
+
+detectors:
+  loitering:
+    enabled: true
+    default_dwell_seconds: 120.0
+    min_motion_variance: 0.05    # tracks moving more than this are likely browsing
+    min_confidence: 0.6
+    confirmation_frames: 10
+    cooldown_seconds: 60.0
+
+  restricted_zone:
+    enabled: true
+    default_severity: HIGH
+    min_confidence: 0.85
+    confirmation_frames: 3
+    cooldown_seconds: 30.0
+    enable_approach_escalation: true
+
+  shelf_tampering:
+    enabled: true
+    min_motion_intensity: 0.3
+    min_interaction_seconds: 5.0
+    min_confidence: 0.7
+    confirmation_frames: 8
+    cooldown_seconds: 45.0
+    use_pose_corroboration: true
+    use_bag_class: true
+
+  abnormal_shelf:
+    enabled: true
+    min_dwell_seconds: 15.0
+    max_revisits: 3
+    max_dwell_seconds: 240.0
+    min_confidence: 0.55
+    cooldown_seconds: 60.0
+
+  unattended_checkout:
+    enabled: true
+    min_unattended_seconds: 30.0
+    use_bag_class: true
+    stationary_pixel_threshold: 800
+    min_confidence: 0.65
+    cooldown_seconds: 90.0
+
+  movement:
+    enabled: true
+    running_speed_px_s: 220.0
+    erratic_heading_changes: 6
+    erratic_window_seconds: 5.0
+    min_track_length: 20
+    min_confidence: 0.7
+    cooldown_seconds: 30.0
+
+  pose:
+    enabled: true
+    hand_near_shelf_max_px: 80
+    posture_analysis: true
+    min_pose_confidence: 0.5
+
+alerts:
+  min_severity_to_notify: MEDIUM
+  global_cooldown_seconds: 30.0
+  min_confidence: 0.5
+  max_alerts_in_memory: 1000
+  dedup_window_seconds: 15.0
+
+anomaly_scorer:
+  enabled: true
+  model_path: models/anomaly_iforest.joblib
+  contamination: 0.05
+  n_estimators: 200
+  confidence_weight: 0.5
+  min_samples_to_train: 100
+  auto_train_on_start: false
+
+multi_camera:
+  enabled: false
+  method: hsv           # hsv|osnet
+  similarity_threshold: 0.5
+  global_track_ttl_seconds: 600.0
+
+# Composable, YAML-driven rules evaluated per-track per-frame.
+# Context keys: track_id, zone_id, zone_type, zone_name, features.* (movement_features)
+#               dwell_seconds, occupancy, severity
+custom_rules: []

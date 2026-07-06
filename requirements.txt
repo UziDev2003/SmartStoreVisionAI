@@ -5,14 +5,33 @@ ultralytics>=8.0.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 
+# Industry-standard CV utilities (Roboflow supervision)
+supervision>=0.18.0
+
+# Tracking & smoothing
+filterpy>=1.4.5
+
+# Pose estimation (Google MediaPipe)
+mediapipe>=0.10.7
+
+# ML for anomaly detection
+scikit-learn>=1.3.2
+joblib>=1.3.2
+
+# Config validation
+pydantic>=2.5.0
+
 # Dashboard
 streamlit>=1.28.0
+streamlit-drawable-canvas>=0.9.3
 flask>=2.3.0
 flask-cors>=4.0.0
 
 # Utilities
 pyyaml>=6.0
 pillow>=10.0.0
+loguru>=0.7.0
+watchdog>=4.0.0
 
 # Testing
 pytest>=7.4.0

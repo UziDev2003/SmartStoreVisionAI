@@ -63,10 +63,16 @@ class TestAlerts:
         a = m.create("loitering","cam_01",1,"Test","medium","z1")
         assert a is not None and a.alert_type == "loitering"
     def test_rate_limit(self):
+        # New rate-limit key includes track_id, so two different tracks
+        # are rate-limited independently. Same track_id + alert_type
+        # within the cooldown window should be suppressed.
         m = AlertManager(rate_limit=60)
-        a1 = m.create("test","cam_01",1,"A1")
-        a2 = m.create("test","cam_01",2,"A2")
-        assert a1 is not None and a2 is None
+        a1 = m.create("test", "cam_01", 1, "A1")
+        a2 = m.create("test", "cam_01", 1, "A1-dup")  # same track
+        a3 = m.create("test", "cam_01", 2, "A2")      # different track
+        assert a1 is not None
+        assert a2 is None       # rate-limited (same track+type)
+        assert a3 is not None   # different track -> allowed
     def test_filter(self):
         m = AlertManager(rate_limit=0)
         m.create("loitering","cam_01",1,"A1","medium")
