@@ -526,7 +526,7 @@ with tab_live:
                     
                     def on_frame(frame):
                         # Display live preview, converting BGR to RGB
-                        video_placeholder.image(frame, channels="BGR", use_container_width=True)
+                        video_placeholder.image(frame, channels="BGR", use_column_width=True)
 
                     # Run batch processing
                     result = process_video_batch(
@@ -862,7 +862,7 @@ with tab_live:
 
                             display_frame = last_frame if last_frame is not None else fr
                             fp.image(cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB),
-                                     channels="RGB", use_container_width=True)
+                                     channels="RGB", use_column_width=True)
 
                             frame_times.append(time.time() - last_display_time)
                             last_display_time = time.time()
@@ -907,7 +907,7 @@ with tab_live:
                                 if st.session_state["hm"]:
                                     heatmap_container.image(
                                         cv2.cvtColor(st.session_state["hm"].get_image(), cv2.COLOR_BGR2RGB),
-                                        use_container_width=True)
+                                        use_column_width=True)
 
                             elapsed = time.time() - loop_start
                             target_interval = 1.0 / target_fps

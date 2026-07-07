@@ -453,11 +453,11 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
         if existing_zones:
             preview = _draw_zones_on_image(frame, existing_zones)
             st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
-                     use_container_width=True,
+                     use_column_width=True,
                      caption="Current zones (preview)")
         else:
             st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                     use_container_width=True,
+                     use_column_width=True,
                      caption="Video frame")
         result = _render_opencv_editor_button(frame, existing_zones or [],
                                                default_type, default_dwell, cam)
