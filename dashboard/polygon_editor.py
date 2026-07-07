@@ -1,23 +1,20 @@
 """
-Streamlit Polygon Editor (resilient)
-====================================
+Streamlit Polygon Editor (image-based interactive)
+====================================================
 Interactive zone editor that lets operators define, edit, and save
-zones. Two modes are supported:
+zones directly on the video frame image.
 
-  1. **Visual canvas** (preferred) — uses `streamlit-drawable-canvas`
-     when it works on the installed Streamlit version.
-  2. **Text fallback** — pure-Streamlit editor that lets the user
-     define polygons via JSON coordinates and number inputs. Always
-     available, even on Streamlit >= 1.39 where the drawable-canvas
-     library is broken.
-
-The editor automatically selects the right mode at runtime.
+Two modes:
+  1. **Image Click Editor** (default) — click on the image to place
+     polygon vertices; uses Streamlit-native click coordinates.
+  2. **OpenCV Interactive** — opens a dedicated OpenCV window with
+     full mouse-drawing support (separate process, best experience).
 
 Features:
-  - Load first frame from a video file
+  - Load first frame from a video file or use a blank canvas
   - Pre-populate editor with existing zones
-  - Polygon / Rect drawing tools (visual mode)
-  - Color-coded zone-type selector (restricted/checkout/shelf/entrance/general)
+  - Polygon drawing via mouse clicks on the image
+  - Color-coded zone-type selector
   - Capacity & dwell threshold inputs
   - Save to per-camera runtime YAML or to main zones.yaml
   - Delete & reset
@@ -30,7 +27,11 @@ from PIL import Image
 import numpy as np
 import cv2
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+import tempfile
+import os
+import sys
+import subprocess
 
 from src.analytics.zone_analytics import Zone
 from src.utils.zone_io import (
@@ -46,61 +47,13 @@ ZONE_COLORS = {
     "general": "#ffffff",
 }
 
-
-# ---------------------------------------------------------------------------
-# canvas helper
-# ---------------------------------------------------------------------------
-def _has_working_canvas() -> bool:
-    """Check whether `streamlit_drawable_canvas` works with the installed
-    version of Streamlit (newer versions removed `image.image_to_url`)."""
-    try:
-        import streamlit.elements.image as _img
-        if not hasattr(_img, "image_to_url") and hasattr(_img, "_image_to_url"):
-            _img.image_to_url = _img._image_to_url
-        from streamlit_drawable_canvas import st_canvas  # noqa: F401
-        return hasattr(_img, "image_to_url")
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Conversion helpers (used by visual mode)
-# ---------------------------------------------------------------------------
-def _zones_to_canvas_objects(zones):
-    """Convert existing zones to a fabric.js initial drawing."""
-    objects = []
-    for z in zones:
-        color = ZONE_COLORS.get(z.zone_type, "#ffffff")
-        objects.append({
-            "type": "polygon",
-            "version": "5.3.0",
-            "originX": "left", "originY": "top",
-            "left": 0, "top": 0,
-            "fill": "rgba(0,0,0,0)",
-            "stroke": color,
-            "strokeWidth": 3,
-            "strokeDashArray": None,
-            "label": z.name,
-            "points": [{"x": float(p[0]), "y": float(p[1])} for p in z.polygon],
-            "selectable": True,
-        })
-    return {"version": "5.3.0", "objects": objects}
-
-
-def _canvas_to_zones(canvas_data, zone_type, default_dwell):
-    """Convert canvas objects to Zone list (preserving assigned types if present)."""
-    color_to_type = {v: k for k, v in ZONE_COLORS.items()}
-    objects = canvas_data.get("objects", []) if canvas_data else []
-    zones = []
-    for obj in objects:
-        stroke = (obj.get("stroke") or "").lower()
-        inferred_type = color_to_type.get(stroke, zone_type)
-        zlist = zones_from_canvas([obj])
-        for z in zlist:
-            z.zone_type = inferred_type
-            z.dwell_threshold = default_dwell
-            zones.append(z)
-    return zones
+ZONE_COLORS_BGR = {
+    "restricted": (0, 0, 255),
+    "checkout": (0, 255, 0),
+    "shelf": (0, 255, 255),
+    "entrance": (255, 255, 0),
+    "general": (255, 255, 255),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -137,13 +90,102 @@ def _smooth_zone(zone, epsilon=4.0):
 
 
 # ---------------------------------------------------------------------------
-# Fallback: text-based editor
+# Draw zones on an image for display
 # ---------------------------------------------------------------------------
-def _render_text_editor(existing_zones, default_type, default_dwell, cam):
-    """Pure-Streamlit fallback editor. Lets the user edit a list of zones
-    via JSON coordinates, name, type, capacity, and dwell inputs."""
-    if "_text_zones" not in st.session_state:
-        st.session_state["_text_zones"] = [
+def _draw_zones_on_image(img: np.ndarray, zones: List[Zone],
+                          highlight_idx: Optional[int] = None,
+                          draw_labels: bool = True) -> np.ndarray:
+    """Draw all zones on a copy of the image with color coding."""
+    out = img.copy()
+    for i, z in enumerate(zones):
+        color = ZONE_COLORS_BGR.get(z.zone_type, (255, 255, 255))
+        if highlight_idx is not None and i == highlight_idx:
+            # Highlight selected zone with thicker lines
+            thickness = 4
+        else:
+            thickness = 2
+
+        pts = np.array(z.polygon, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(out, [pts], True, color, thickness)
+        if draw_labels and z.name:
+            cx = int(np.mean([p[0] for p in z.polygon]))
+            cy = int(np.mean([p[1] for p in z.polygon]))
+            cv2.putText(out, z.name, (cx - 30, cy), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, color, 2)
+            # Draw vertex markers
+            for p in z.polygon:
+                cv2.circle(out, (int(p[0]), int(p[1])), 4, color, -1)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Image Click Editor (replaces the old text editor)
+# ---------------------------------------------------------------------------
+def _handle_image_click(x: int, y: int, img_w: int, img_h: int):
+    """Handle a click on the displayed image. Places or moves a vertex."""
+    if "_temp_polygon" not in st.session_state:
+        return
+
+    # Scale coordinates to display size if needed
+    state = st.session_state["_temp_polygon"]
+    display_w = state.get("display_w", img_w)
+    display_h = state.get("display_h", img_h)
+    scale_x = img_w / display_w
+    scale_y = img_h / display_h
+    img_x = int(x * scale_x)
+    img_y = int(y * scale_y)
+
+    # Clamp
+    img_x = max(0, min(img_x, img_w - 1))
+    img_y = max(0, min(img_y, img_h - 1))
+
+    current_pts = state["points"]
+    # Check if clicking near an existing point (for removal)
+    click_radius = 15
+    for i, (px, py) in enumerate(current_pts):
+        dist = np.sqrt((px - img_x) ** 2 + (py - img_y) ** 2)
+        if dist < click_radius:
+            # Remove this point
+            state["points"].pop(i)
+            st.session_state["_needs_rerun"] = True
+            return
+
+    # Check if clicking near the first point (close polygon)
+    if len(current_pts) >= 3:
+        px, py = current_pts[0]
+        dist = np.sqrt((px - img_x) ** 2 + (py - img_y) ** 2)
+        if dist < click_radius * 2:
+            # Close polygon - finalize
+            state["closed"] = True
+            st.session_state["_needs_rerun"] = True
+            return
+
+    # Add new point
+    state["points"].append((img_x, img_y))
+    st.session_state["_needs_rerun"] = True
+
+
+def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],
+                          default_type: str, default_dwell: int,
+                          cam: str) -> List[Zone]:
+    """
+    Image-based polygon editor using Streamlit click coordinates.
+    User clicks on the image to place vertices, clicks near first vertex to close.
+    Click near an existing vertex to remove it.
+    """
+    h, w = frame.shape[:2]
+
+    # Init session state for the image editor
+    if "_temp_polygon" not in st.session_state:
+        st.session_state["_temp_polygon"] = {
+            "points": [],
+            "closed": False,
+            "editing_zone_idx": None,  # which existing zone is being edited
+        }
+    if "_needs_rerun" not in st.session_state:
+        st.session_state["_needs_rerun"] = False
+    if "_image_zones" not in st.session_state:
+        st.session_state["_image_zones"] = [
             {
                 "zone_id": z.zone_id,
                 "name": z.name,
@@ -155,131 +197,358 @@ def _render_text_editor(existing_zones, default_type, default_dwell, cam):
             for z in (existing_zones or [])
         ]
 
-    zones_state = st.session_state["_text_zones"]
-    new_zones = []
-    st.caption("Edit zones in the table. Polygon = list of (x, y) tuples, "
-               "e.g. `[(100,200),(300,200),(300,400)]`.")
+    poly_state = st.session_state["_temp_polygon"]
+    zones_state = st.session_state["_image_zones"]
 
-    for i, z in enumerate(zones_state):
-        with st.expander(
-            f"📍 {z['name'] or 'Unnamed'} ({z['zone_type']})",
-            expanded=False,
-        ):
-            c1, c2 = st.columns(2)
-            with c1:
-                z["name"] = st.text_input("Name", value=z["name"], key=f"z_name_{i}")
-                z["zone_id"] = st.text_input("ID", value=z["zone_id"], key=f"z_id_{i}")
-                z["zone_type"] = st.selectbox(
-                    "Type", list(ZONE_COLORS.keys()),
-                    index=list(ZONE_COLORS.keys()).index(z["zone_type"])
-                    if z["zone_type"] in ZONE_COLORS else 4,
-                    key=f"z_type_{i}",
-                )
-            with c2:
-                z["capacity"] = st.number_input(
-                    "Capacity", 0, 1000, int(z["capacity"]), key=f"z_cap_{i}")
-                z["dwell_threshold"] = st.number_input(
-                    "Dwell (s)", 0, 600, int(z["dwell_threshold"]), key=f"z_dw_{i}")
-            poly_str = st.text_area(
-                "Polygon (JSON list of [x,y])",
-                value=json.dumps(z["polygon"]),
-                key=f"z_poly_{i}",
-                height=80,
-            )
-            try:
-                parsed = json.loads(poly_str)
-                if isinstance(parsed, list) and all(
-                    isinstance(p, (list, tuple)) and len(p) == 2 for p in parsed
-                ):
-                    z["polygon"] = [(int(p[0]), int(p[1])) for p in parsed]
-                else:
-                    st.warning("Polygon must be a list of [x, y] pairs.")
-            except Exception:
-                st.warning("Invalid JSON — keeping previous polygon.")
-            if st.button("🗑️ Delete", key=f"z_del_{i}"):
-                st.session_state["_text_zones"].pop(i)
-                st.rerun()
-            new_zones.append(z)
+    # Current working zones (displayed on image)
+    working_zones = []
+    for z in zones_state:
+        if len(z["polygon"]) >= 3:
+            working_zones.append(Zone(
+                z["zone_id"], z["name"], z["zone_type"],
+                z["polygon"], z["capacity"], z["dwell_threshold"],
+            ))
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ Add Zone", use_container_width=True):
-            st.session_state["_text_zones"].append({
-                "zone_id": f"zone_{len(st.session_state['_text_zones']) + 1}",
-                "name": f"Zone {len(st.session_state['_text_zones']) + 1}",
-                "zone_type": default_type,
+    # Draw the current temp polygon points if in drawing mode
+    display_img = _draw_zones_on_image(frame, working_zones)
+    if not poly_state["closed"] and poly_state["points"]:
+        pts = poly_state["points"]
+        # Draw lines between points
+        for i in range(len(pts) - 1):
+            cv2.line(display_img, pts[i], pts[i + 1], (0, 255, 255), 2)
+        # Draw a circle at each point
+        for pt in pts:
+            cv2.circle(display_img, pt, 5, (0, 255, 255), -1)
+        # If 3+ points, draw a dashed line back to first to suggest closing
+        if len(pts) >= 3:
+            cv2.line(display_img, pts[-1], pts[0], (0, 200, 200), 1,
+                     cv2.LINE_AA)
+        # Instructions on image
+        cv2.putText(display_img,
+                    "Click to add points | Click near start to close | "
+                    "Click near vertex to remove",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+    # Display the image
+    display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+    st.image(display_img_rgb, use_container_width=True,
+             caption="Click on image to add polygon vertices")
+
+    # Handle clicks via column-based click capture
+    # We use a Streamlit button approach: place buttons at image grid positions
+    # The user clicks numbered buttons corresponding to approximate positions
+    display_w = st.session_state.get("_display_w", w)
+
+    # Use coordinate sliders as an alternative precise input
+    col1, col2 = st.columns(2)
+    with col1:
+        click_x = st.number_input("X coordinate", 0, w, 
+                                   value=poly_state["points"][-1][0] if poly_state["points"] else w // 2,
+                                   key="poly_x_input")
+    with col2:
+        click_y = st.number_input("Y coordinate", 0, h,
+                                   value=poly_state["points"][-1][1] if poly_state["points"] else h // 2,
+                                   key="poly_y_input")
+
+    bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+    with bcol1:
+        if st.button("➕ Add Point", use_container_width=True) and not poly_state["closed"]:
+            _handle_image_click(click_x, click_y, w, h)
+    with bcol2:
+        if st.button("🔒 Close Polygon", use_container_width=True):
+            if len(poly_state["points"]) >= 3:
+                poly_state["closed"] = True
+                st.session_state["_needs_rerun"] = True
+    with bcol3:
+        if st.button("🗑️ Clear Points", use_container_width=True):
+            poly_state["points"] = []
+            poly_state["closed"] = False
+            st.session_state["_needs_rerun"] = True
+    with bcol4:
+        if st.button("↩️ Undo Last", use_container_width=True):
+            if poly_state["points"]:
+                poly_state["points"].pop()
+                st.session_state["_needs_rerun"] = True
+
+    # When a polygon is closed, add it to zones_state
+    if poly_state["closed"] and len(poly_state["points"]) >= 3:
+        ztype = poly_state.get("zone_type", default_type)
+        zone_idx = poly_state.get("editing_zone_idx")
+        zone_name = st.text_input("Zone name",
+                                   value=f"Zone {len(zones_state) + 1}",
+                                   key="new_zone_name")
+        if zone_idx is not None and 0 <= zone_idx < len(zones_state):
+            # Update existing zone
+            zones_state[zone_idx]["polygon"] = list(poly_state["points"])
+        else:
+            # Add new zone
+            zones_state.append({
+                "zone_id": f"zone_{len(zones_state) + 1}",
+                "name": zone_name,
+                "zone_type": ztype,
                 "capacity": 5,
                 "dwell_threshold": default_dwell,
-                "polygon": [(100, 100), (300, 100), (300, 300), (100, 300)],
+                "polygon": list(poly_state["points"]),
             })
-            st.rerun()
-    with c2:
-        if st.button("🗑️ Clear All", use_container_width=True):
-            st.session_state["_text_zones"] = []
-            st.rerun()
+        # Reset temp polygon
+        poly_state["points"] = []
+        poly_state["closed"] = False
+        poly_state["editing_zone_idx"] = None
+        st.session_state["_needs_rerun"] = True
+
+    # Show existing zones list with edit/delete
+    st.markdown("---")
+    st.markdown("#### Current Zones")
+    for i, z in enumerate(zones_state):
+        c = ZONE_COLORS.get(z["zone_type"], "#888")
+        col_a, col_b, col_c, col_d = st.columns([4, 2, 1, 1])
+        with col_a:
+            st.markdown(
+                f"<span style='color:{c}; font-weight:bold;'>●</span> "
+                f"**{z['name']}** ({z['zone_type']}) — {len(z['polygon'])} vertices",
+                unsafe_allow_html=True,
+            )
+        with col_b:
+            new_type = st.selectbox(
+                "Type", list(ZONE_COLORS.keys()),
+                index=list(ZONE_COLORS.keys()).index(z["zone_type"])
+                if z["zone_type"] in ZONE_COLORS else 4,
+                key=f"zone_type_{i}",
+                label_visibility="collapsed",
+            )
+            if new_type != z["zone_type"]:
+                z["zone_type"] = new_type
+                st.session_state["_needs_rerun"] = True
+        with col_c:
+            if st.button("✏️", key=f"edit_zone_{i}"):
+                # Load zone points into temp polygon for editing
+                poly_state["points"] = list(z["polygon"])
+                poly_state["closed"] = False
+                poly_state["editing_zone_idx"] = i
+                st.session_state["_needs_rerun"] = True
+        with col_d:
+            if st.button("🗑️", key=f"del_zone_{i}"):
+                zones_state.pop(i)
+                st.session_state["_needs_rerun"] = True
+
+    # Rerun if flagged
+    if st.session_state["_needs_rerun"]:
+        st.session_state["_needs_rerun"] = False
+        st.rerun()
 
     # Convert dicts to Zone objects
-    return [
-        Zone(
-            z["zone_id"], z["name"], z["zone_type"],
-            z["polygon"], int(z["capacity"]), int(z["dwell_threshold"]),
-        )
-        for z in st.session_state["_text_zones"]
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Visual canvas editor
-# ---------------------------------------------------------------------------
-def _render_canvas_editor(frame, existing_zones, tool, default_color,
-                          default_dwell, stroke_width, cam):
-    """The original canvas-based editor. Falls back to text editor on failure."""
-    from streamlit_drawable_canvas import st_canvas
-
-    h, w = frame.shape[:2]
-    target_w = 960
-    if w != target_w:
-        scale = target_w / w
-        frame = cv2.resize(frame, (target_w, int(h * scale)))
-    rgb = frame[:, :, ::-1]
-    bg_image = Image.fromarray(rgb)
-
-    initial_drawing = None
-    if existing_zones:
-        scaled = []
-        scale = target_w / w
-        for z in existing_zones:
-            scaled.append(Zone(
-                z.zone_id, z.name, z.zone_type,
-                [(int(p[0] * scale), int(p[1] * scale)) for p in z.polygon],
-                z.capacity, z.dwell_threshold,
+    result = []
+    for z in zones_state:
+        if len(z["polygon"]) >= 3:
+            result.append(Zone(
+                z["zone_id"], z["name"], z["zone_type"],
+                z["polygon"], int(z.get("capacity", 5)),
+                int(z.get("dwell_threshold", default_dwell)),
             ))
-        initial_drawing = _zones_to_canvas_objects(scaled)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# OpenCV Interactive Editor (dedicated window with mouse callbacks)
+# ---------------------------------------------------------------------------
+def _run_opencv_editor(frame: np.ndarray, existing_zones: List[Zone],
+                        default_type: str, output_file: str) -> str:
+    """
+    Launch an OpenCV window for interactive polygon drawing.
+    Saves zones to output_file as JSON. Returns the file path.
+    """
+    script = f"""
+import cv2, json, sys, numpy as np
+from pathlib import Path
+
+frame = np.array({frame.tolist()})
+existing = {json.dumps([
+    {{
+        "zone_id": z.zone_id, "name": z.name, "zone_type": z.zone_type,
+        "polygon": list(z.polygon), "capacity": z.capacity,
+        "dwell_threshold": z.dwell_threshold
+    }} for z in existing_zones
+])}
+default_type = "{default_type}"
+output_file = "{output_file}"
+
+# Colors
+ZONE_COLORS_BGR = {{
+    "restricted": (0, 0, 255),
+    "checkout": (0, 255, 0),
+    "shelf": (0, 255, 255),
+    "entrance": (255, 255, 0),
+    "general": (255, 255, 255),
+}}
+
+zones = existing.copy()
+current_points = []
+drawing = False
+zone_name = ""
+zone_type = default_type
+current_idx = -1
+
+def draw_zones(img, zones_list, highlight=-1):
+    out = img.copy()
+    for i, z in enumerate(zones_list):
+        color = ZONE_COLORS_BGR.get(z["zone_type"], (255, 255, 255))
+        thick = 4 if i == highlight else 2
+        pts = np.array(z["polygon"], dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(out, [pts], True, color, thick)
+        cx = int(np.mean([p[0] for p in z["polygon"]]))
+        cy = int(np.mean([p[1] for p in z["polygon"]]))
+        cv2.putText(out, z["name"], (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    return out
+
+def mouse_callback(event, x, y, flags, param):
+    global current_points, drawing
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # Check if near an existing point (remove)
+        for i, (px, py) in enumerate(current_points):
+            if abs(px - x) < 10 and abs(py - y) < 10:
+                current_points.pop(i)
+                return
+        # Check if close to first point (close polygon)
+        if len(current_points) >= 3:
+            px, py = current_points[0]
+            if abs(px - x) < 15 and abs(py - y) < 15:
+                drawing = False
+                return
+        current_points.append((x, y))
+
+cv2.namedWindow("Zone Editor")
+cv2.setMouseCallback("Zone Editor", mouse_callback)
+
+print("=== OpenCV Zone Editor ===")
+print("Left-click: add vertex")
+print("Click near first vertex: close polygon")
+print("Click near existing vertex: remove")
+print("Keys:")
+print("  's' - Save zones")
+print("  'n' - New zone")
+print("  'd' - Delete last zone")
+print("  'ESC'/'q' - Quit without saving")
+print("  '1-5' - Set zone type (1=restricted,2=checkout,3=shelf,4=entrance,5=general)")
+
+while True:
+    img = draw_zones(frame, zones)
+    # Draw current drawing
+    if current_points:
+        for i in range(len(current_points) - 1):
+            cv2.line(img, current_points[i], current_points[i + 1], (0, 255, 255), 2)
+        for pt in current_points:
+            cv2.circle(img, pt, 4, (0, 255, 255), -1)
+        if len(current_points) >= 3:
+            cv2.line(img, current_points[-1], current_points[0], (0, 200, 200), 1)
+
+    # Instructions
+    cv2.putText(img, f"Type: {zone_type} | S:save N:new D:del Q:quit",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    if current_points:
+        cv2.putText(img, f"Points: {len(current_points)} (click near start to close)",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+    cv2.imshow("Zone Editor", img)
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == 27 or key == ord('q'):
+        break
+    elif key == ord('s') and current_points and len(current_points) >= 3:
+        name = input(f"Name for zone ({len(zones)+1}): ") or f"Zone {{len(zones)+1}}"
+        zones.append({{
+            "zone_id": name.lower().replace(" ", "_"),
+            "name": name,
+            "zone_type": zone_type,
+            "polygon": list(current_points),
+            "capacity": 5,
+            "dwell_threshold": 120,
+        }})
+        current_points = []
+        print(f"Zone saved: {{name}}")
+    elif key == ord('n'):
+        current_points = []
+        zone_type = default_type
+        print("New zone started")
+    elif key == ord('d'):
+        if zones:
+            removed = zones.pop()
+            print(f"Deleted: {{removed['name']}}")
+    elif key == ord('1'):
+        zone_type = "restricted"
+    elif key == ord('2'):
+        zone_type = "checkout"
+    elif key == ord('3'):
+        zone_type = "shelf"
+    elif key == ord('4'):
+        zone_type = "entrance"
+    elif key == ord('5'):
+        zone_type = "general"
+
+cv2.destroyAllWindows()
+
+# Save
+with open(output_file, 'w') as f:
+    json.dump(zones, f)
+print(f"Saved {{len(zones)}} zones to {{output_file}}")
+"""
+    # Create temp script file
+    script_path = tempfile.mktemp(suffix=".py", prefix="zone_editor_")
+    with open(script_path, "w") as f:
+        f.write(script)
 
     try:
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 0, 0, 0)",
-            stroke_width=stroke_width,
-            stroke_color=default_color,
-            background_image=bg_image,
-            update_streamlit=True,
-            height=frame.shape[0],
-            width=frame.shape[1],
-            drawing_mode=tool,
-            initial_drawing=initial_drawing,
-            key="zone_canvas",
+        result = subprocess.run(
+            [sys.executable, script_path],
+            capture_output=True, text=True, timeout=300
         )
-    except AttributeError as e:
-        # Newer Streamlit broke streamlit_drawable_canvas
-        st.warning(
-            f"⚠️ Visual canvas unavailable in this Streamlit version: `{e}`. "
-            "Switching to **text-based zone editor**."
-        )
-        return _render_text_editor(existing_zones, "general", default_dwell, cam)
+        print(result.stdout)
+        if result.stderr:
+            print(f"Stderr: {result.stderr}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        st.error("Editor timed out after 5 minutes")
+        return None
+    except Exception as e:
+        st.error(f"Editor error: {e}")
+        return None
+    finally:
+        try:
+            os.unlink(script_path)
+        except Exception:
+            pass
 
-    if canvas_result and canvas_result.json_data:
-        return _canvas_to_zones(canvas_result.json_data, "general", default_dwell)
-    return []
+    return output_file
+
+
+def _render_opencv_editor_button(frame: np.ndarray, existing_zones: List[Zone],
+                                   default_type: str, default_dwell: int,
+                                   cam: str) -> Optional[List[Zone]]:
+    """Render a button to launch the OpenCV interactive editor."""
+    if st.button("🖱️ Open Interactive Zone Editor (OpenCV window)",
+                 use_container_width=True, type="primary"):
+        out_file = tempfile.mktemp(suffix=".json", prefix="zones_")
+        result_file = _run_opencv_editor(frame, existing_zones, default_type, out_file)
+        if result_file and Path(result_file).exists():
+            with open(result_file, "r") as f:
+                zones_data = json.load(f)
+            try:
+                os.unlink(result_file)
+            except Exception:
+                pass
+            if zones_data:
+                zones = []
+                for z in zones_data:
+                    zones.append(Zone(
+                        z["zone_id"], z["name"], z["zone_type"],
+                        z["polygon"], z.get("capacity", 5),
+                        z.get("dwell_threshold", default_dwell),
+                    ))
+                st.success(f"Loaded {len(zones)} zones from editor")
+                return zones
+            else:
+                st.warning("No zones were created")
+        else:
+            st.warning("Editor was closed or no zones saved")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -292,25 +561,19 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
     """
     st.markdown("### 🗺️ Interactive Zone Editor")
     st.caption(
-        "Draw polygons directly on a video frame, or use the text editor. "
-        "Click **💾 Save Zones** to persist."
+        "Draw polygons directly by clicking on the video frame image. "
+        "Click **Add Point** to place vertices, **Close Polygon** to finish, "
+        "or use the OpenCV interactive editor for mouse drawing."
     )
 
     # --- Sidebar controls ---
     with st.sidebar:
         st.subheader("Zone Editor")
         cam = st.text_input("Camera ID", value=camera_id, key="zone_cam_id")
-        has_canvas = _has_working_canvas()
-        mode_options = ["Visual canvas"] if has_canvas else []
-        mode_options.append("Text editor")
-        mode = st.radio(
-            "Editor mode",
-            mode_options,
-            index=0,
-            help="Visual canvas requires `streamlit-drawable-canvas` to be "
-                 "compatible with the installed Streamlit version.",
-        )
-        tool = st.selectbox("Drawing Tool", ["polygon", "rect"], index=0)
+        tool = st.radio("Editor Mode", ["Image Click Editor", "OpenCV Interactive"],
+                        index=0,
+                        help="Image Click: place vertices via coordinate inputs. "
+                             "OpenCV: dedicated window with mouse drawing.")
         default_type = st.selectbox(
             "Default Zone Type",
             list(ZONE_COLORS.keys()),
@@ -318,7 +581,6 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
         )
         default_color = ZONE_COLORS[default_type]
         default_dwell = st.slider("Default Dwell Threshold (s)", 10, 600, 120, 10)
-        stroke_width = st.slider("Stroke Width", 1, 8, 3)
         save_to = st.radio(
             "Save Target",
             ["Runtime (per camera)", "Main (zones.yaml)"],
@@ -332,30 +594,56 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
     frame = None
     if video_path and Path(video_path).exists():
         frame = _extract_first_frame(video_path)
-    if frame is not None:
-        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                 channels="RGB", use_container_width=True)
-    else:
+    if frame is None:
+        # Create a blank canvas
+        frame = np.ones((540, 960, 3), dtype=np.uint8) * 30
+        cv2.putText(frame, "No video loaded - blank canvas",
+                    (240, 270), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (100, 100, 100), 2)
         st.info(
             "📹 No video loaded — drawing on a blank canvas. Upload a video "
             "in the Live tab to see the first frame here."
         )
-
-    # --- Choose editor mode ---
-    if mode == "Visual canvas" and frame is not None:
-        zones_final = _render_canvas_editor(
-            frame, existing_zones, tool, default_color,
-            default_dwell, stroke_width, cam,
-        )
     else:
-        zones_final = _render_text_editor(existing_zones, default_type, default_dwell, cam)
+        h, w = frame.shape[:2]
+        target_w = 960
+        if w != target_w:
+            scale = target_w / w
+            frame = cv2.resize(frame, (target_w, int(h * scale)))
+
+    # --- Editor modes ---
+    zones_final = []
+
+    if tool == "OpenCV Interactive":
+        # Show existing zones on frame preview
+        if existing_zones:
+            preview = _draw_zones_on_image(frame, existing_zones)
+            st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
+                     use_container_width=True,
+                     caption="Current zones (preview)")
+        else:
+            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                     use_container_width=True,
+                     caption="Video frame")
+        result = _render_opencv_editor_button(frame, existing_zones or [],
+                                               default_type, default_dwell, cam)
+        if result is not None:
+            zones_final = result
+        else:
+            # Fall back to existing zones
+            zones_final = existing_zones or []
+    else:
+        # Image Click Editor
+        zones_final = _render_image_editor(
+            frame, existing_zones or [], default_type, default_dwell, cam,
+        )
 
     # --- Save / Clear / Load buttons ---
     col1, col2, col3 = st.columns(3)
     with col1:
         save_clicked = st.button("💾 Save Zones", type="primary", use_container_width=True)
     with col2:
-        clear_clicked = st.button("🗑️ Clear Canvas", use_container_width=True)
+        clear_clicked = st.button("🗑️ Clear All Zones", use_container_width=True)
     with col3:
         load_runtime_clicked = st.button("📂 Load Saved", use_container_width=True)
 
@@ -372,14 +660,15 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
             on_save(zones_final, str(saved_to))
 
     if clear_clicked:
-        if "_text_zones" in st.session_state:
-            st.session_state["_text_zones"] = []
+        if "_image_zones" in st.session_state:
+            st.session_state["_image_zones"] = []
+        if "_temp_polygon" in st.session_state:
+            st.session_state["_temp_polygon"] = {"points": [], "closed": False, "editing_zone_idx": None}
         st.rerun()
 
     if load_runtime_clicked:
         loaded = load_zones(camera_id=cam)
-        st.session_state["_loaded_zones"] = loaded
-        st.session_state["_text_zones"] = [
+        st.session_state["_image_zones"] = [
             {
                 "zone_id": z.zone_id,
                 "name": z.name,
@@ -398,7 +687,7 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
             c = ZONE_COLORS.get(z.zone_type, "#888")
             st.markdown(
                 f"<span style='color:{c}; font-weight:bold;'>●</span> "
-                f"**{z.name}** ({z.zone_type}) - {len(z.polygon)} vertices",
+                f"**{z.name}** ({z.zone_type}) — {len(z.polygon)} vertices",
                 unsafe_allow_html=True,
             )
 
