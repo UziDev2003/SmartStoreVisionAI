@@ -145,11 +145,34 @@ def zones_from_canvas(canvas_objects: List[Dict[str, Any]]) -> List[Zone]:
                 (int(left), int(top + height)),
             ]
         elif t == "path" and "path" in obj:
-            # Path is a list of [[x,y], [x,y], ...] strings sometimes
+            # Path is a list of commands like [['M', x, y], ['L', x, y], ...]
             try:
                 raw = obj["path"]
-                if isinstance(raw, list) and raw and isinstance(raw[0], (list, tuple)):
-                    polygon = [(int(p[0]), int(p[1])) for p in raw]
+                
+                # Fabric.js path coordinates are relative to the center of the bounding box if shifted
+                # But when drawn by the user and not moved, they are absolute, or left/top are the bounding box top-left
+                # We can just extract the x, y which are the last two elements of the command array
+                
+                # For `st_canvas`, when left and top are provided, they offset the path points
+                # Actually, fabric.js path commands are relative to center of width/height?
+                # It's safer to use the points if they are absolute. Let's just grab the x, y values and add left/top
+                
+                left = float(obj.get("left", 0))
+                top = float(obj.get("top", 0))
+                
+                for p in raw:
+                    if isinstance(p, (list, tuple)) and len(p) >= 3:
+                        try:
+                            # Usually ['M', x, y] or ['L', x, y]
+                            # Path is usually relative to center if left/top are set, or absolute if not
+                            # For streamlit_drawable_canvas, if it's drawn, it's usually absolute + offset
+                            # Actually, `st_canvas` paths have `path` as relative to `left`, `top`
+                            # Wait, actually let's just grab the numbers and see
+                            x = float(p[-2]) + left
+                            y = float(p[-1]) + top
+                            polygon.append((int(x), int(y)))
+                        except (ValueError, TypeError):
+                            continue
             except Exception:
                 polygon = []
 

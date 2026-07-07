@@ -149,6 +149,7 @@ def process_video_batch(
     video_clip,
     gest_d, fall_d, fight_d,
     progress_callback=None,
+    frame_callback=None,
 ) -> dict:
     """
     Process an entire video file in batch mode.
@@ -324,6 +325,9 @@ def process_video_batch(
                     (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
         writer.write(out)
+        
+        if frame_callback:
+            frame_callback(out)
 
         # Progress
         if progress_callback and fc % 30 == 0:
@@ -511,6 +515,12 @@ with tab_live:
                         frame_m.metric("Frame", f"{info['frame']}/{info['total']}")
                         foot_m.metric("Footfall", info['footfall'])
                         sus_m.metric("Suspicious", info['suspicious'])
+                        
+                    video_placeholder = st.empty()
+                    
+                    def on_frame(frame):
+                        # Display live preview, converting BGR to RGB
+                        video_placeholder.image(frame, channels="BGR", use_container_width=True)
 
                     # Run batch processing
                     result = process_video_batch(
@@ -526,6 +536,7 @@ with tab_live:
                         face_blur=face_blur, video_clip=video_clip,
                         gest_d=gest_d, fall_d=fall_d, fight_d=fight_d,
                         progress_callback=on_progress,
+                        frame_callback=on_frame,
                     )
 
                     progress_bar.progress(1.0)

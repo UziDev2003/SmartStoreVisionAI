@@ -121,231 +121,65 @@ def _draw_zones_on_image(img: np.ndarray, zones: List[Zone],
 # ---------------------------------------------------------------------------
 # Image Click Editor (replaces the old text editor)
 # ---------------------------------------------------------------------------
-def _handle_image_click(x: int, y: int, img_w: int, img_h: int):
-    """Handle a click on the displayed image. Places or moves a vertex."""
-    if "_temp_polygon" not in st.session_state:
-        return
-
-    # Scale coordinates to display size if needed
-    state = st.session_state["_temp_polygon"]
-    display_w = state.get("display_w", img_w)
-    display_h = state.get("display_h", img_h)
-    scale_x = img_w / display_w
-    scale_y = img_h / display_h
-    img_x = int(x * scale_x)
-    img_y = int(y * scale_y)
-
-    # Clamp
-    img_x = max(0, min(img_x, img_w - 1))
-    img_y = max(0, min(img_y, img_h - 1))
-
-    current_pts = state["points"]
-    # Check if clicking near an existing point (for removal)
-    click_radius = 15
-    for i, (px, py) in enumerate(current_pts):
-        dist = np.sqrt((px - img_x) ** 2 + (py - img_y) ** 2)
-        if dist < click_radius:
-            # Remove this point
-            state["points"].pop(i)
-            st.session_state["_needs_rerun"] = True
-            return
-
-    # Check if clicking near the first point (close polygon)
-    if len(current_pts) >= 3:
-        px, py = current_pts[0]
-        dist = np.sqrt((px - img_x) ** 2 + (py - img_y) ** 2)
-        if dist < click_radius * 2:
-            # Close polygon - finalize
-            state["closed"] = True
-            st.session_state["_needs_rerun"] = True
-            return
-
-    # Add new point
-    state["points"].append((img_x, img_y))
-    st.session_state["_needs_rerun"] = True
-
+from streamlit_drawable_canvas import st_canvas
 
 def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],
                           default_type: str, default_dwell: int,
                           cam: str) -> List[Zone]:
     """
-    Image-based polygon editor using Streamlit click coordinates.
-    User clicks on the image to place vertices, clicks near first vertex to close.
-    Click near an existing vertex to remove it.
+    Image-based polygon editor using streamlit-drawable-canvas.
+    User draws interactively on the image.
     """
     h, w = frame.shape[:2]
-
-    # Init session state for the image editor
-    if "_temp_polygon" not in st.session_state:
-        st.session_state["_temp_polygon"] = {
-            "points": [],
-            "closed": False,
-            "editing_zone_idx": None,  # which existing zone is being edited
-        }
-    if "_needs_rerun" not in st.session_state:
-        st.session_state["_needs_rerun"] = False
-    if "_image_zones" not in st.session_state:
-        st.session_state["_image_zones"] = [
-            {
-                "zone_id": z.zone_id,
-                "name": z.name,
-                "zone_type": z.zone_type,
-                "capacity": z.capacity,
-                "dwell_threshold": z.dwell_threshold,
-                "polygon": list(z.polygon),
-            }
-            for z in (existing_zones or [])
-        ]
-
-    poly_state = st.session_state["_temp_polygon"]
-    zones_state = st.session_state["_image_zones"]
-
-    # Current working zones (displayed on image)
-    working_zones = []
-    for z in zones_state:
-        if len(z["polygon"]) >= 3:
-            working_zones.append(Zone(
-                z["zone_id"], z["name"], z["zone_type"],
-                z["polygon"], z["capacity"], z["dwell_threshold"],
-            ))
-
-    # Draw the current temp polygon points if in drawing mode
-    display_img = _draw_zones_on_image(frame, working_zones)
-    if not poly_state["closed"] and poly_state["points"]:
-        pts = poly_state["points"]
-        # Draw lines between points
-        for i in range(len(pts) - 1):
-            cv2.line(display_img, pts[i], pts[i + 1], (0, 255, 255), 2)
-        # Draw a circle at each point
-        for pt in pts:
-            cv2.circle(display_img, pt, 5, (0, 255, 255), -1)
-        # If 3+ points, draw a dashed line back to first to suggest closing
-        if len(pts) >= 3:
-            cv2.line(display_img, pts[-1], pts[0], (0, 200, 200), 1,
-                     cv2.LINE_AA)
-        # Instructions on image
-        cv2.putText(display_img,
-                    "Click to add points | Click near start to close | "
-                    "Click near vertex to remove",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-    # Display the image
+    
+    # We will draw existing zones on the background image
+    display_img = _draw_zones_on_image(frame, existing_zones or [], draw_labels=True)
     display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
-    st.image(display_img_rgb, use_container_width=True,
-             caption="Click on image to add polygon vertices")
-
-    # Handle clicks via column-based click capture
-    # We use a Streamlit button approach: place buttons at image grid positions
-    # The user clicks numbered buttons corresponding to approximate positions
-    display_w = st.session_state.get("_display_w", w)
-
-    # Use coordinate sliders as an alternative precise input
-    col1, col2 = st.columns(2)
+    pil_image = Image.fromarray(display_img_rgb)
+    
+    st.write("Draw new zones directly on the image below. Click 'Polygon' to start drawing. Double click or click the start point to close.")
+    
+    # Select drawing tool and color
+    col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        click_x = st.number_input("X coordinate", 0, w, 
-                                   value=poly_state["points"][-1][0] if poly_state["points"] else w // 2,
-                                   key="poly_x_input")
+        drawing_mode = st.selectbox("Drawing tool:", ("polygon", "rect", "freedraw", "transform"))
     with col2:
-        click_y = st.number_input("Y coordinate", 0, h,
-                                   value=poly_state["points"][-1][1] if poly_state["points"] else h // 2,
-                                   key="poly_y_input")
+        stroke_width = st.slider("Stroke width: ", 1, 10, 3)
+    with col3:
+        new_zone_type = st.selectbox("New Zone Type:", list(ZONE_COLORS.keys()), index=list(ZONE_COLORS.keys()).index(default_type) if default_type in ZONE_COLORS else 4)
+        
+    stroke_color = ZONE_COLORS.get(new_zone_type, "#00ff00")
+    
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=stroke_width,
+        stroke_color=stroke_color,
+        background_image=pil_image,
+        update_streamlit=True,
+        height=h,
+        width=w,
+        drawing_mode=drawing_mode,
+        key="canvas",
+    )
+    
+    zones_final = list(existing_zones) if existing_zones else []
+    
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data["objects"]
+        # Convert fabric objects to zones
+        # Ensure the type matches the selected type by injecting it
+        for obj in objects:
+            obj["stroke"] = stroke_color # Force the type color so zones_from_canvas picks it up
+            
+        new_zones = zones_from_canvas(objects)
+        # Apply the default dwell to new zones
+        for z in new_zones:
+            z.dwell_threshold = default_dwell
+            
+        # Add them to final
+        zones_final.extend(new_zones)
 
-    bcol1, bcol2, bcol3, bcol4 = st.columns(4)
-    with bcol1:
-        if st.button("➕ Add Point", use_container_width=True) and not poly_state["closed"]:
-            _handle_image_click(click_x, click_y, w, h)
-    with bcol2:
-        if st.button("🔒 Close Polygon", use_container_width=True):
-            if len(poly_state["points"]) >= 3:
-                poly_state["closed"] = True
-                st.session_state["_needs_rerun"] = True
-    with bcol3:
-        if st.button("🗑️ Clear Points", use_container_width=True):
-            poly_state["points"] = []
-            poly_state["closed"] = False
-            st.session_state["_needs_rerun"] = True
-    with bcol4:
-        if st.button("↩️ Undo Last", use_container_width=True):
-            if poly_state["points"]:
-                poly_state["points"].pop()
-                st.session_state["_needs_rerun"] = True
-
-    # When a polygon is closed, add it to zones_state
-    if poly_state["closed"] and len(poly_state["points"]) >= 3:
-        ztype = poly_state.get("zone_type", default_type)
-        zone_idx = poly_state.get("editing_zone_idx")
-        zone_name = st.text_input("Zone name",
-                                   value=f"Zone {len(zones_state) + 1}",
-                                   key="new_zone_name")
-        if zone_idx is not None and 0 <= zone_idx < len(zones_state):
-            # Update existing zone
-            zones_state[zone_idx]["polygon"] = list(poly_state["points"])
-        else:
-            # Add new zone
-            zones_state.append({
-                "zone_id": f"zone_{len(zones_state) + 1}",
-                "name": zone_name,
-                "zone_type": ztype,
-                "capacity": 5,
-                "dwell_threshold": default_dwell,
-                "polygon": list(poly_state["points"]),
-            })
-        # Reset temp polygon
-        poly_state["points"] = []
-        poly_state["closed"] = False
-        poly_state["editing_zone_idx"] = None
-        st.session_state["_needs_rerun"] = True
-
-    # Show existing zones list with edit/delete
-    st.markdown("---")
-    st.markdown("#### Current Zones")
-    for i, z in enumerate(zones_state):
-        c = ZONE_COLORS.get(z["zone_type"], "#888")
-        col_a, col_b, col_c, col_d = st.columns([4, 2, 1, 1])
-        with col_a:
-            st.markdown(
-                f"<span style='color:{c}; font-weight:bold;'>●</span> "
-                f"**{z['name']}** ({z['zone_type']}) — {len(z['polygon'])} vertices",
-                unsafe_allow_html=True,
-            )
-        with col_b:
-            new_type = st.selectbox(
-                "Type", list(ZONE_COLORS.keys()),
-                index=list(ZONE_COLORS.keys()).index(z["zone_type"])
-                if z["zone_type"] in ZONE_COLORS else 4,
-                key=f"zone_type_{i}",
-                label_visibility="collapsed",
-            )
-            if new_type != z["zone_type"]:
-                z["zone_type"] = new_type
-                st.session_state["_needs_rerun"] = True
-        with col_c:
-            if st.button("✏️", key=f"edit_zone_{i}"):
-                # Load zone points into temp polygon for editing
-                poly_state["points"] = list(z["polygon"])
-                poly_state["closed"] = False
-                poly_state["editing_zone_idx"] = i
-                st.session_state["_needs_rerun"] = True
-        with col_d:
-            if st.button("🗑️", key=f"del_zone_{i}"):
-                zones_state.pop(i)
-                st.session_state["_needs_rerun"] = True
-
-    # Rerun if flagged
-    if st.session_state["_needs_rerun"]:
-        st.session_state["_needs_rerun"] = False
-        st.rerun()
-
-    # Convert dicts to Zone objects
-    result = []
-    for z in zones_state:
-        if len(z["polygon"]) >= 3:
-            result.append(Zone(
-                z["zone_id"], z["name"], z["zone_type"],
-                z["polygon"], int(z.get("capacity", 5)),
-                int(z.get("dwell_threshold", default_dwell)),
-            ))
-    return result
+    return zones_final
 
 
 # ---------------------------------------------------------------------------
