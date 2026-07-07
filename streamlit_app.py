@@ -21,6 +21,7 @@ st.markdown(
     """<style>
 /* Modern dark theme */
 .stApp { background: #0a0a1a; color: #ffffff; }
+[data-testid="stSidebar"] { background-color: #1a1a2e !important; }
 h1, h2, h3, h4, h5, h6, p, span, div, label { color: #ffffff !important; }
 .stMarkdown p { color: #ffffff !important; }
 .stMetric>div:first-child{color:#00d9ff!important;font-size:1.5rem!important}
