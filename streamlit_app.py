@@ -15,6 +15,13 @@ from datetime import datetime
 from typing import List, Optional
 from collections import deque
 import threading
+import logging
+import warnings
+
+# Suppress harmless console spam (PyTorch instantiate class warnings & Streamlit fast-frame missing file logs)
+warnings.filterwarnings("ignore", category=UserWarning)
+logging.getLogger("streamlit.runtime.memory_media_file_storage").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.media_file_manager").setLevel(logging.ERROR)
 
 st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
 st.markdown(
