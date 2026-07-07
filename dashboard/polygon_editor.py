@@ -276,10 +276,10 @@ while True:
             cv2.line(img, current_points[-1], current_points[0], (0, 200, 200), 1)
 
     # Instructions
-    cv2.putText(img, f"Type: {zone_type} | S:save N:new D:del Q:quit",
+    cv2.putText(img, f"Type: {{zone_type}} | S:save N:new D:del Q:quit",
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     if current_points:
-        cv2.putText(img, f"Points: {len(current_points)} (click near start to close)",
+        cv2.putText(img, f"Points: {{len(current_points)}} (click near start to close)",
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     cv2.imshow("Zone Editor", img)
@@ -288,7 +288,7 @@ while True:
     if key == 27 or key == ord('q'):
         break
     elif key == ord('s') and current_points and len(current_points) >= 3:
-        name = input(f"Name for zone ({len(zones)+1}): ") or f"Zone {{len(zones)+1}}"
+        name = input(f"Name for zone ({{len(zones)+1}}): ") or f"Zone {{len(zones)+1}}"
         zones.append({{
             "zone_id": name.lower().replace(" ", "_"),
             "name": name,
