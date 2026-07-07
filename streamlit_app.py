@@ -518,7 +518,7 @@ with tab_live:
                         output_path=output_path,
                         det=det, trk=trk,
                         zones=zones, zA=zA, hm=hm, am=am,
-                        sus_detector=sus_d, bhv=bhv,
+                        sus_detector=sus_det, bhv=bhv,
                         show_hm=show_hm, enable_pose=enable_pose,
                         preproc=preproc, bg_sub=bg_sub,
                         line_det=line_det, queue_det=queue_det,
