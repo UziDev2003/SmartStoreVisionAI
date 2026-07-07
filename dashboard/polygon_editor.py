@@ -121,6 +121,15 @@ def _draw_zones_on_image(img: np.ndarray, zones: List[Zone],
 # ---------------------------------------------------------------------------
 # Image Click Editor (replaces the old text editor)
 # ---------------------------------------------------------------------------
+# Streamlit 1.36+ compatibility hack for streamlit-drawable-canvas 0.9.3
+try:
+    import streamlit.elements.image as st_image
+    if not hasattr(st_image, "image_to_url"):
+        from streamlit.elements.lib.image_utils import image_to_url
+        st_image.image_to_url = image_to_url
+except Exception:
+    pass
+
 from streamlit_drawable_canvas import st_canvas
 
 def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],

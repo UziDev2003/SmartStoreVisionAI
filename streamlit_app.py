@@ -29,8 +29,20 @@ st.markdown(
 /* Modern dark theme */
 .stApp { background: #0a0a1a; color: #ffffff; }
 [data-testid="stSidebar"] { background-color: #1a1a2e !important; }
-h1, h2, h3, h4, h5, h6, p, span, div, label { color: #ffffff !important; }
+h1, h2, h3, h4, h5, h6, p, label { color: #ffffff !important; }
 .stMarkdown p { color: #ffffff !important; }
+
+/* Selectbox dropdown fix */
+div[data-baseweb="select"] > div { background-color: #1a1a2e; }
+div[data-baseweb="popover"] ul { background-color: #1a1a2e; }
+div[data-baseweb="popover"] li { color: #ffffff; }
+div[data-baseweb="popover"] li:hover { background-color: #00d9ff; color: #000000; }
+div[data-baseweb="popover"] li[aria-selected="true"] { background-color: #0f3460; color: #ffffff; }
+
+/* Modal / Exception dialog fix */
+div[data-baseweb="modal"] section { background-color: #1a1a2e !important; color: #ffffff !important; }
+div[data-baseweb="modal"] div { color: #ffffff; }
+
 .stMetric>div:first-child{color:#00d9ff!important;font-size:1.5rem!important}
 .stMetric>div:nth-child(2){color:#ffffff!important}
 .zone{background:#0f3460;color:#ffffff;padding:10px;border-radius:8px;margin:5px 0}
