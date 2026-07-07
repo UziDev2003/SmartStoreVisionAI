@@ -6,7 +6,7 @@ opencv-python>=4.8.0
 numpy>=1.24.0
 
 # Industry-standard CV utilities (Roboflow supervision)
-supervision>=0.18.0
+supervision==0.25.0
 
 # Tracking & smoothing
 filterpy>=1.4.5
