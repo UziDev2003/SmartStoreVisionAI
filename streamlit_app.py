@@ -20,7 +20,9 @@ st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout=
 st.markdown(
     """<style>
 /* Modern dark theme */
-.stApp { background: #0a0a1a; }
+.stApp { background: #0a0a1a; color: #ffffff; }
+h1, h2, h3, h4, h5, h6, p, span, div, label { color: #ffffff !important; }
+.stMarkdown p { color: #ffffff !important; }
 .stMetric>div:first-child{color:#00d9ff!important;font-size:1.5rem!important}
 .stMetric>div:nth-child(2){color:#ffffff!important}
 .zone{background:#0f3460;color:#ffffff;padding:10px;border-radius:8px;margin:5px 0}
@@ -32,6 +34,10 @@ st.markdown(
 .result-card{background:#1a1a2e;border-radius:12px;padding:20px;margin:10px 0;border:1px solid #2a2a4a}
 .stButton>button{background:#0f3460;color:white;border-radius:8px;border:none;padding:8px 20px}
 .stButton>button:hover{background:#1a4a8a}
+/* Tabs and expanders */
+.stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p { color: #ffffff !important; }
+.streamlit-expanderHeader { color: #ffffff !important; }
+[data-testid="stExpander"] details summary p { color: #ffffff !important; }
 </style>""",
     unsafe_allow_html=True,
 )
