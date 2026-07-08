@@ -131,8 +131,9 @@ try:
         buffered = io.BytesIO()
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
-        fmt = image_format.upper() if image_format else "PNG"
-        if fmt == "JPEG": fmt = "JPEG"
+        fmt = image_format.upper() if isinstance(image_format, str) else "PNG"
+        if fmt not in ["PNG", "JPEG", "GIF", "BMP", "WEBP"]:
+            fmt = "PNG"
         image.save(buffered, format=fmt)
         img_str = base64.b64encode(buffered.getvalue()).decode()
         return f"data:image/{fmt.lower()};base64,{img_str}"
