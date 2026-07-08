@@ -33,7 +33,7 @@ logging.getLogger("streamlit.runtime.media_file_manager").setLevel(logging.ERROR
 st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
 
 # ---------------------------------------------------------------------------
-# Initialize session state BEFORE any further Streamlit operations
+# Initialize session state IMMEDIATELY after set_page_config
 # ---------------------------------------------------------------------------
 def _init_session():
     defaults = {
@@ -89,6 +89,7 @@ def _init_session():
 
 _init_session()
 
+# Now apply the CSS after session init
 st.markdown(
     """<style>
 /* Modern dark theme */
@@ -127,9 +128,11 @@ div[data-baseweb="modal"] div { color: #ffffff; }
     unsafe_allow_html=True,
 )
 
+# Add path for local imports
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Import all required modules AFTER session init
 from src.detector.yolo_detector import YOLODetector
 from src.tracker.bytetrack import ByteTracker
 from src.analytics.zone_analytics import ZoneAnalytics, Zone
