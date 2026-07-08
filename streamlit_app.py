@@ -25,12 +25,13 @@ import threading
 import logging
 import warnings
 
-# Suppress harmless console spam (PyTorch instantiate class warnings & Streamlit fast-frame missing file logs)
+# Initialize Streamlit page config FIRST - before any other Streamlit calls
+st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
+
+# NOW set up logging and warnings AFTER page config
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.getLogger("streamlit.runtime.memory_media_file_storage").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime.media_file_manager").setLevel(logging.ERROR)
-
-st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Initialize session state IMMEDIATELY after set_page_config
