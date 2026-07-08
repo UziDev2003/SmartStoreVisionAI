@@ -31,6 +31,64 @@ logging.getLogger("streamlit.runtime.memory_media_file_storage").setLevel(loggin
 logging.getLogger("streamlit.runtime.media_file_manager").setLevel(logging.ERROR)
 
 st.set_page_config(page_title="Smart Store Vision AI", page_icon="🏪", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Initialize session state BEFORE any further Streamlit operations
+# ---------------------------------------------------------------------------
+def _init_session():
+    defaults = {
+        "run": False,
+        "stats": [],
+        "am": None,
+        "hm": None,
+        "zA": None,
+        "zones": None,
+        "sus_detector": None,
+        "pose_analyzer": None,
+        "uploaded_video_path": None,
+        "activities_log": [],
+        "frame_skip": 2,
+        "last_processed_time": 0.0,
+        "frame_count": 0,
+        "processed_video_path": None,
+        # Advanced analytics module keys used by _get_* functions
+        "pp_enabled": True,
+        "pp_w": 0,
+        "pp_h": 0,
+        "pp_letterbox": False,
+        "pp_clahe": False,
+        "pp_clahe_clip": 2.0,
+        "pp_wb": False,
+        "pp_gamma": 1.0,
+        "pp_blur": 0,
+        "pp_sharpen": False,
+        "pp_denoise": False,
+        "pp_rgb": False,
+        "bg_enabled": False,
+        "bg_method": "MOG2",
+        "bg_history": 500,
+        "line_enabled": False,
+        "queue_enabled": False,
+        "obj_enabled": False,
+        "face_blur_enabled": False,
+        "face_blur_method": "opencv",
+        "clip_enabled": False,
+        "clip_pre": 10,
+        "clip_post": 10,
+        "pose_gesture": True,
+        "pose_fall": True,
+        "pose_fight": True,
+        # Queue/live processing state
+        "last_queue_status": [],
+        "last_object_events": [],
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+_init_session()
+
 st.markdown(
     """<style>
 /* Modern dark theme */
@@ -100,28 +158,6 @@ from src.analytics.pose_detectors import PoseEvent
 @st.cache_resource
 def get_det(ms="s", cf=0.5, dv="cpu"):
     return YOLODetector(model_size=ms, confidence_threshold=cf, device=dv)
-
-
-def _init_session():
-    defaults = {
-        "run": False,
-        "stats": [],
-        "am": AlertManager(),
-        "hm": None,
-        "zA": None,
-        "zones": None,
-        "sus_detector": None,
-        "pose_analyzer": None,
-        "uploaded_video_path": None,
-        "activities_log": [],
-        "frame_skip": 2,
-        "last_processed_time": 0.0,
-        "frame_count": 0,
-        "processed_video_path": None,  # path to batch-processed output
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
 
 
 def _build_suspicious_detector(enable_pose: bool) -> Optional[SuspiciousActivityDetector]:
@@ -413,7 +449,6 @@ def _should_process_frame(frame_idx, frame_skip):
 # ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
-_init_session()
 st.markdown("## 🏪 Smart Store Vision AI")
 st.caption("YOLOv8 + ByteTrack — Batch Video Processing & Live Stream")
 
