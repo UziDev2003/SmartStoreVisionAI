@@ -461,7 +461,15 @@ with st.sidebar:
     st.header("⚙️ Settings")
     ms = st.selectbox("Model", ["n", "s", "m"], 1, key="cfg_model")
     cf = st.slider("Confidence", 0.2, 0.9, 0.5, 0.05, key="cfg_conf")
-    dv = st.selectbox("Device", ["cpu", "cuda"], 0, key="cfg_device")
+    device_options = ["cpu"]
+    if torch.cuda.is_available():
+        device_options.append("cuda")
+    default_device_idx = device_options.index("cuda") if "cuda" in device_options else 0
+    dv = st.selectbox("Device", device_options, default_device_idx, key="cfg_device")
+    
+    if "cuda" not in device_options:
+        st.warning("⚠️ CUDA GPU not detected. Running on CPU (slow).")
+        
     loiter = st.slider("Loiter (s)", 30, 300, 120, 10, key="cfg_loiter")
     show_hm = st.checkbox("Show Heatmap", False, key="cfg_showhm")
     enable_pose = st.checkbox("Enable Pose (MediaPipe)", False, key="cfg_pose")
