@@ -76,14 +76,29 @@ class VideoClipper:
         h, w = latest.shape[:2]
         self._frame_size = (w, h)
         out_path = self.output_dir / f"{alert_id}.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        self._writer = cv2.VideoWriter(str(out_path), fourcc, self.fps, (w, h))
-        if not self._writer.isOpened():
-            # Fallback: try XVID
-            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        
+        # Try codecs in order of compatibility: mp4v -> XVID -> MJPG
+        # Avoid H.265 which requires special FFmpeg builds on Windows
+        codec_priority = ["mp4v", "XVID", "MJPG"]
+        if self.codec in codec_priority:
+            # Move current codec to front of priority list
+            codecs_to_try = [self.codec] + [c for c in codec_priority if c != self.codec]
+        else:
+            codecs_to_try = codec_priority
+        
+        self._writer = None
+        for codec in codecs_to_try:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
             self._writer = cv2.VideoWriter(str(out_path), fourcc, self.fps, (w, h))
-        if not self._writer.isOpened():
-            self._writer = None
+            if self._writer.isOpened():
+                print(f"[INFO] VideoClipper initialized with codec: {codec}")
+                break
+            else:
+                self._writer.release()
+                self._writer = None
+        
+        if self._writer is None:
+            print("[WARN] VideoClipper failed to initialize with any codec")
             return ""
         # Flush pre-event buffer
         for _, f in self._buffer:

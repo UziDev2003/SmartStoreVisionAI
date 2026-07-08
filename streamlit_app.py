@@ -237,18 +237,26 @@ def process_video_batch(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Output video writer
-    # Use H.264 (avc1) for browser-streamable fragmented MP4.
-    # This fixes Cloudflare tunnel "stream canceled" errors because the file
-    # can be played progressively instead of requiring the full file first.
-    # Fall back to mp4v if avc1 is not available (rare on Colab/Linux).
+    # Output video writer - use widely supported codecs
+    # Order: mp4v (most compatible) -> XVID -> MJPG
+    # Avoid H.265 (hevc) which requires special FFmpeg builds
     out_w, out_h = 960, 540
-    fourcc = cv2.VideoWriter_fourcc(*"avc1")
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
-    if not writer.isOpened():
-        # Fallback to mp4v
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = None
+    
+    # Try codecs in order of compatibility
+    codec_priority = ["mp4v", "XVID", "MJPG", "avc1"]
+    for codec in codec_priority:
+        fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
+        if writer.isOpened():
+            print(f"[INFO] Video writer initialized with codec: {codec}")
+            break
+        else:
+            writer.release()
+            writer = None
+    
+    if writer is None:
+        raise RuntimeError("Failed to initialize video writer with any available codec")
 
     fc = 0
     start_time = time.time()
