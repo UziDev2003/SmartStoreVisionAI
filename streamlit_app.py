@@ -238,9 +238,17 @@ def process_video_batch(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # Output video writer
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # Use H.264 (avc1) for browser-streamable fragmented MP4.
+    # This fixes Cloudflare tunnel "stream canceled" errors because the file
+    # can be played progressively instead of requiring the full file first.
+    # Fall back to mp4v if avc1 is not available (rare on Colab/Linux).
     out_w, out_h = 960, 540
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
+    if not writer.isOpened():
+        # Fallback to mp4v
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
 
     fc = 0
     start_time = time.time()
@@ -684,10 +692,26 @@ with tab_live:
                     r4.metric("Footfall", result["total_footfall"])
 
                     # Show processed video
+                    # File-size aware: only stream inline if < 30MB to avoid
+                    # Cloudflare tunnel "stream canceled" errors on large media.
                     st.markdown("### 🎬 Processed Output")
-                    st.video(output_path)
+                    try:
+                        file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                    except OSError:
+                        file_size_mb = 0
+                    if file_size_mb < 30:
+                        st.success(
+                            f"📦 Output size: {file_size_mb:.1f} MB — streaming inline"
+                        )
+                        st.video(output_path)
+                    else:
+                        st.warning(
+                            f"📦 Output size: {file_size_mb:.1f} MB — too large to "
+                            f"stream through the tunnel. Use the download button "
+                            f"below to save it locally."
+                        )
 
-                    # Download button
+                    # Download button (always available - works for any file size)
                     with open(output_path, "rb") as f:
                         st.download_button(
                             "⬇️ Download Processed Video",

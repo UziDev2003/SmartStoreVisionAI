@@ -142,63 +142,177 @@ try:
 except Exception:
     pass
 
-from streamlit_drawable_canvas import st_canvas
+# Try to import the drawable canvas; fall back to a coordinate-based editor
+# if it's not installed (this is what was causing the image to not show)
+try:
+    from streamlit_drawable_canvas import st_canvas
+    _CANVAS_AVAILABLE = True
+    _CANVAS_ERROR = None
+except Exception as _e:
+    _CANVAS_AVAILABLE = False
+    _CANVAS_ERROR = str(_e)
+    st_canvas = None
+
 
 def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],
                           default_type: str, default_dwell: int,
                           cam: str) -> List[Zone]:
     """
-    Image-based polygon editor using streamlit-drawable-canvas.
-    User draws interactively on the image.
+    Image-based polygon editor.
+    - If streamlit-drawable-canvas is available, uses interactive canvas.
+    - Otherwise falls back to a coordinate-based editor with the image shown
+      via st.image() so the user can at least see the frame.
     """
     h, w = frame.shape[:2]
-    
-    # We will draw existing zones on the background image
+    # Cap canvas size for performance & Cloudflare-tunnel friendliness
+    MAX_W = 800
+    if w > MAX_W:
+        scale = MAX_W / w
+        frame = cv2.resize(frame, (MAX_W, int(h * scale)))
+        h, w = frame.shape[:2]
+
+    # Draw existing zones on the background image
     display_img = _draw_zones_on_image(frame, existing_zones or [], draw_labels=True)
     display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(display_img_rgb)
-    
-    st.write("Draw new zones directly on the image below. Click 'Polygon' to start drawing. Double click or click the start point to close.")
-    
+
+    st.write(
+        "Draw new zones directly on the image below. Click 'Polygon' to start "
+        "drawing. Double click or click the start point to close."
+    )
+
     # Select drawing tool and color
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        drawing_mode = st.selectbox("Drawing tool:", ("polygon", "rect", "freedraw", "transform"))
+        drawing_mode = st.selectbox("Drawing tool:",
+                                     ("polygon", "rect", "freedraw", "transform"))
     with col2:
         stroke_width = st.slider("Stroke width: ", 1, 10, 3)
     with col3:
-        new_zone_type = st.selectbox("New Zone Type:", list(ZONE_COLORS.keys()), index=list(ZONE_COLORS.keys()).index(default_type) if default_type in ZONE_COLORS else 4)
-        
+        new_zone_type = st.selectbox(
+            "New Zone Type:", list(ZONE_COLORS.keys()),
+            index=list(ZONE_COLORS.keys()).index(default_type)
+            if default_type in ZONE_COLORS else 4,
+        )
+
     stroke_color = ZONE_COLORS.get(new_zone_type, "#00ff00")
-    
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
-        stroke_width=stroke_width,
-        stroke_color=stroke_color,
-        background_image=pil_image,
-        update_streamlit=True,
-        height=h,
-        width=w,
-        drawing_mode=drawing_mode,
-        key="canvas",
-    )
-    
+
     zones_final = list(existing_zones) if existing_zones else []
-    
-    if canvas_result.json_data is not None:
-        objects = canvas_result.json_data["objects"]
-        # Convert fabric objects to zones
-        # Ensure the type matches the selected type by injecting it
-        for obj in objects:
-            obj["stroke"] = stroke_color # Force the type color so zones_from_canvas picks it up
-            
-        new_zones = zones_from_canvas(objects)
-        # Apply the default dwell to new zones
-        for z in new_zones:
-            z.dwell_threshold = default_dwell
-            
-        # Add them to final
-        zones_final.extend(new_zones)
+
+    if _CANVAS_AVAILABLE:
+        try:
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.3)",
+                stroke_width=stroke_width,
+                stroke_color=stroke_color,
+                background_image=pil_image,
+                update_streamlit=True,
+                height=h,
+                width=w,
+                drawing_mode=drawing_mode,
+                key="canvas",
+            )
+            if canvas_result is not None and getattr(canvas_result, "json_data", None):
+                objects = canvas_result.json_data["objects"]
+                for obj in objects:
+                    obj["stroke"] = stroke_color
+                new_zones = zones_from_canvas(objects)
+                for z in new_zones:
+                    z.dwell_threshold = default_dwell
+                zones_final.extend(new_zones)
+            elif canvas_result is None:
+                # Canvas returned nothing - likely a render issue. Fall back.
+                st.warning(
+                    "⚠️ Interactive canvas didn't render. Showing the frame "
+                    "as a static image — use the coordinate editor below to "
+                    "add zones manually."
+                )
+                st.image(pil_image, caption="Video frame (no interactive canvas)",
+                         use_column_width=True)
+                zones_final = _render_coordinate_editor(
+                    frame, existing_zones or [], new_zone_type, default_dwell,
+                )
+        except Exception as _canvas_exc:
+            st.error(
+                f"❌ Interactive canvas error: {_canvas_exc}\n\n"
+                f"Falling back to coordinate-based editor. "
+                f"You can also try installing/upgrading the library: "
+                f"`pip install -U streamlit-drawable-canvas`"
+            )
+            st.image(pil_image, caption="Video frame", use_column_width=True)
+            zones_final = _render_coordinate_editor(
+                frame, existing_zones or [], new_zone_type, default_dwell,
+            )
+    else:
+        # Canvas library not installed - fall back to coordinate editor
+        st.info(
+            f"ℹ️ `streamlit-drawable-canvas` is not available ({_CANVAS_ERROR}). "
+            f"Using the coordinate-based editor below instead."
+        )
+        st.image(pil_image, caption="Video frame", use_column_width=True)
+        zones_final = _render_coordinate_editor(
+            frame, existing_zones or [], new_zone_type, default_dwell,
+        )
+
+    return zones_final
+
+
+def _render_coordinate_editor(frame: np.ndarray, existing_zones: List[Zone],
+                               zone_type: str, default_dwell: int) -> List[Zone]:
+    """
+    Fallback coordinate-based zone editor. The user enters polygon vertex
+    coordinates manually. This is used when the interactive canvas
+    component fails to render.
+    """
+    zones_final = list(existing_zones) if existing_zones else []
+
+    st.markdown("#### ✏️ Coordinate-Based Zone Editor")
+    st.caption(
+        "Add zones by entering polygon vertices as `(x, y)` coordinates. "
+        "Reference the image above to pick points."
+    )
+
+    # Add a new zone
+    with st.expander("➕ Add a new zone", expanded=False):
+        new_name = st.text_input("Zone name", value=f"Zone {len(zones_final) + 1}",
+                                  key="coord_zone_name")
+        new_type = st.selectbox("Type", list(ZONE_COLORS.keys()),
+                                 index=list(ZONE_COLORS.keys()).index(zone_type)
+                                 if zone_type in ZONE_COLORS else 4,
+                                 key="coord_zone_type")
+        new_dwell = st.number_input("Dwell threshold (s)", 0, 600,
+                                     default_dwell, 10, key="coord_zone_dwell")
+        new_cap = st.number_input("Capacity", 0, 100, 5, 1, key="coord_zone_cap")
+
+        # Vertex input
+        n_points = st.number_input("Number of vertices", 3, 12, 4, 1,
+                                    key="coord_n_points")
+        pts = []
+        cols = st.columns(2)
+        for i in range(int(n_points)):
+            with cols[i % 2]:
+                c1, c2 = st.columns(2)
+                with c1:
+                    x = st.number_input(f"x{i+1}", 0, 2000, 100, 10,
+                                         key=f"coord_x_{i}")
+                with c2:
+                    y = st.number_input(f"y{i+1}", 0, 2000, 100, 10,
+                                         key=f"coord_y_{i}")
+            pts.append((int(x), int(y)))
+
+        if st.button("➕ Add Zone", key="coord_add_zone") and len(pts) >= 3:
+            from src.analytics.zone_analytics import Zone as _Zone
+            zone = _Zone(
+                zone_id=new_name.lower().replace(" ", "_"),
+                name=new_name,
+                zone_type=new_type,
+                polygon=pts,
+                capacity=int(new_cap),
+                dwell_threshold=int(new_dwell),
+            )
+            zones_final.append(zone)
+            st.success(f"Added zone '{new_name}' with {len(pts)} vertices")
+            st.rerun()
 
     return zones_final
 
