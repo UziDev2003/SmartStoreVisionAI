@@ -399,12 +399,16 @@ def process_video_batch(
                     (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
         writer.write(out)
-        
+
+        # ONLY call frame_callback if provided AND throttled.
+        # For batch processing, the user can disable preview entirely for max speed.
         if frame_callback:
-            # Throttle the display preview to max ~15 FPS (every 66ms) to avoid saturating Streamlit's WebSockets
             now = time.time()
-            if now - last_frame_time >= 0.066:
-                frame_callback(out)
+            if now - last_frame_time >= 0.066:  # ~15 FPS preview cap
+                try:
+                    frame_callback(out)
+                except Exception:
+                    pass
                 last_frame_time = now
 
         # Progress
@@ -551,6 +555,23 @@ with tab_live:
                 existing_zones = _default_zones(960, 540)
                 st.caption("Using default zones (no saved zones found)")
 
+            # Performance options for batch processing
+            st.markdown("##### ⚙️ Batch Options")
+            show_preview = st.checkbox(
+                "📺 Show Live Preview While Processing",
+                value=False,
+                key="batch_show_preview",
+                help="Disable for MAXIMUM processing speed. The output video will "
+                     "still have all the detections drawn on it. Re-enable to watch "
+                     "progress live (slower)."
+            )
+            preview_every = st.slider(
+                "Preview every N frames (if enabled)",
+                1, 60, 10,
+                key="batch_preview_every",
+                help="Higher = faster but jumpier preview. Only used when preview is ON."
+            )
+
             # Process button
             if st.button("▶️ Process Video", type="primary", use_container_width=True):
                 try:
@@ -601,11 +622,23 @@ with tab_live:
                         foot_m.metric("Footfall", info['footfall'])
                         sus_m.metric("Suspicious", info['suspicious'])
                         
-                    video_placeholder = st.empty()
+                    # Only create video_placeholder if preview is enabled
+                    video_placeholder = st.empty() if show_preview else None
+                    preview_counter = {"n": 0}
                     
                     def on_frame(frame):
-                        # Display live preview, converting BGR to RGB
-                        video_placeholder.image(frame, channels="BGR", use_column_width=True)
+                        if not show_preview:
+                            return
+                        # Only display every N frames to avoid saturating Streamlit
+                        preview_counter["n"] += 1
+                        if preview_counter["n"] % max(1, preview_every) != 0:
+                            return
+                        try:
+                            # Resize for faster display
+                            small = cv2.resize(frame, (480, 270))
+                            video_placeholder.image(small, channels="BGR", use_column_width=True)
+                        except Exception:
+                            pass
 
                     # Run batch processing
                     result = process_video_batch(
