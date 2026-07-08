@@ -124,9 +124,20 @@ def _draw_zones_on_image(img: np.ndarray, zones: List[Zone],
 # Streamlit 1.36+ compatibility hack for streamlit-drawable-canvas 0.9.3
 try:
     import streamlit.elements.image as st_image
-    if not hasattr(st_image, "image_to_url"):
-        from streamlit.elements.lib.image_utils import image_to_url
-        st_image.image_to_url = image_to_url
+    def _mock_image_to_url(image, width, height, image_format, *args, **kwargs):
+        import io, base64
+        from PIL import Image
+        import numpy as np
+        buffered = io.BytesIO()
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        fmt = image_format.upper() if image_format else "PNG"
+        if fmt == "JPEG": fmt = "JPEG"
+        image.save(buffered, format=fmt)
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return f"data:image/{fmt.lower()};base64,{img_str}"
+    
+    st_image.image_to_url = _mock_image_to_url
 except Exception:
     pass
 

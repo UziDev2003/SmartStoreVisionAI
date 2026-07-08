@@ -7,6 +7,13 @@ Smart Store Vision AI - Streamlit App (v4 with batch video processing)
   real-time playback.
 - Clean modern UI with processing stats.
 """
+import torch
+# Patch torch.classes.__path__ to prevent Streamlit's file watcher from raising warnings/errors
+try:
+    torch.classes.__path__ = []
+except AttributeError:
+    pass
+
 import streamlit as st
 import cv2, time, tempfile, os
 import numpy as np
@@ -197,6 +204,7 @@ def process_video_batch(
 
     fc = 0
     start_time = time.time()
+    last_frame_time = 0.0
     activities_log = []
     last_queue_status = []
     last_object_events = []
@@ -353,7 +361,11 @@ def process_video_batch(
         writer.write(out)
         
         if frame_callback:
-            frame_callback(out)
+            # Throttle the display preview to max ~15 FPS (every 66ms) to avoid saturating Streamlit's WebSockets
+            now = time.time()
+            if now - last_frame_time >= 0.066:
+                frame_callback(out)
+                last_frame_time = now
 
         # Progress
         if progress_callback and fc % 30 == 0:
