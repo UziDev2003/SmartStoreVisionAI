@@ -1,11 +1,12 @@
 """
-Smart Store Vision AI - Streamlit App (v4 with batch video processing)
+Smart Store Vision AI - Streamlit App (v5 with fixed video/zone display)
 ======================================================================
 - **Video Processing** mode: upload a video → process entire file → download
   results. Much faster than frame-by-frame streaming.
 - **Live Stream** mode: webcam / RTSP with frame dropping for smooth
   real-time playback.
 - Clean modern UI with processing stats.
+- FIXED: Video and zone image display issues
 """
 import torch
 # Patch torch.classes.__path__ to prevent Streamlit's file watcher from raising warnings/errors
@@ -47,6 +48,7 @@ def _init_session():
         "sus_detector": None,
         "pose_analyzer": None,
         "uploaded_video_path": None,
+        "uploaded_video_first_frame": None,  # NEW: Store first frame for zone editor
         "activities_log": [],
         "frame_skip": 2,
         "last_processed_time": 0.0,
@@ -197,6 +199,174 @@ def _default_zones(width: int = 960, height: int = 540) -> List[Zone]:
     ]
 
 
+def _ensure_opencv_compatible(video_path: str) -> Optional[str]:
+    """
+    Check if OpenCV can open the video. If not, use FFmpeg to re-encode
+    it to a format compatible with OpenCV's FFmpeg build.
+    
+    Returns the path to a compatible video file (could be the original
+    if it was already compatible).
+    """
+    import subprocess
+    import shutil
+    
+    path = Path(video_path)
+    if not path.exists():
+        return None
+    
+    # Quick check: can OpenCV open this video?
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None and frame.size > 0:
+                return video_path  # Already compatible
+        cap.release()
+    except Exception:
+        pass
+    
+    # Need to convert using FFmpeg
+    if not shutil.which("ffmpeg"):
+        print(f"[ERROR] OpenCV cannot decode '{path.name}' and ffmpeg is not available for conversion")
+        return None
+    
+    converted_path = str(path.with_name(f"converted_{path.name}"))
+    print(f"[INFO] Re-encoding video for OpenCV compatibility: {path.name}")
+    
+    try:
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        # Use libx264 for maximum compatibility with OpenCV builds
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "23",
+            "-an",  # No audio - not needed for processing
+            str(converted_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, startupinfo=startupinfo)
+        
+        if Path(converted_path).exists() and Path(converted_path).stat().st_size > 0:
+            print(f"[INFO] Video successfully re-encoded: {converted_path}")
+            return str(converted_path)
+        else:
+            print(f"[ERROR] FFmpeg conversion failed: {result.stderr[:300]}")
+            return None
+    except Exception as e:
+        print(f"[ERROR] FFmpeg conversion failed: {e}")
+        return None
+
+
+def _extract_first_frame(video_path: str) -> Optional[np.ndarray]:
+    """Extract the first frame from a video file for zone editor display.
+    Uses OpenCV first, falls back to FFmpeg if OpenCV can't decode."""
+    import subprocess
+    import shutil
+    
+    # Try OpenCV first
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                return cv2.resize(frame, (960, 540))
+        cap.release()
+    except Exception:
+        pass
+    
+    # Fallback: Use FFmpeg to extract first frame
+    if shutil.which("ffmpeg"):
+        try:
+            temp_frame = tempfile.mktemp(suffix=".png")
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                temp_frame
+            ]
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            result = subprocess.run(cmd, capture_output=True, startupinfo=startupinfo)
+            if Path(temp_frame).exists():
+                frame = cv2.imread(temp_frame)
+                os.unlink(temp_frame)
+                if frame is not None:
+                    print(f"[INFO] Extracted first frame using FFmpeg fallback")
+                    return cv2.resize(frame, (960, 540))
+            else:
+                if result.stderr:
+                    print(f"[WARN] FFmpeg frame extraction failed: {result.stderr[:200]}")
+        except Exception as e:
+            print(f"[WARN] FFmpeg fallback failed: {e}")
+    
+    return None
+
+
+def _ensure_h264_compatibility(file_path):
+    """
+    Checks if ffmpeg is available on the path and re-encodes the video to H.264/avc1
+    to ensure it can be streamed inline in standard web browsers.
+    """
+    import subprocess
+    import shutil
+    from pathlib import Path
+    
+    path = Path(file_path)
+    if not path.exists():
+        return
+        
+    # Check if ffmpeg is available
+    if not shutil.which("ffmpeg"):
+        print("[WARN] ffmpeg not found in PATH, skipping H.264 re-encoding. Video might not play inline in browser.")
+        return
+        
+    temp_path = path.with_name(f"temp_encode_{path.name}")
+    try:
+        # Re-encode to H.264 with AAC audio (if any) or just video
+        # -pix_fmt yuv420p is required for browser compatibility
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "23",
+            str(temp_path)
+        ]
+        # Run ffmpeg with hidden console on Windows to avoid flashing command window
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+        subprocess.run(cmd, check=True, startupinfo=startupinfo, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Replace the original file with the re-encoded one
+        if temp_path.exists() and temp_path.stat().st_size > 0:
+            path.unlink()
+            temp_path.rename(path)
+            print(f"[INFO] Video successfully re-encoded to web-compatible H.264: {path}")
+    except Exception as e:
+        print(f"[ERROR] failed to re-encode video with ffmpeg: {e}")
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Batch Video Processing (for uploaded files)
 # ---------------------------------------------------------------------------
@@ -238,13 +408,13 @@ def process_video_batch(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # Output video writer - use widely supported codecs
-    # Order: mp4v (most compatible) -> XVID -> MJPG
-    # Avoid H.265 (hevc) which requires special FFmpeg builds
     out_w, out_h = 960, 540
     writer = None
     
     # Try codecs in order of compatibility
-    codec_priority = ["mp4v", "XVID", "MJPG", "avc1"]
+    # Put mp4v first as it's universally supported across all OpenCV builds
+    # avc1/H264 requires specific backends that may not be available on all systems
+    codec_priority = ["mp4v", "avc1", "XVID", "MJPG"]
     for codec in codec_priority:
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
@@ -254,6 +424,8 @@ def process_video_batch(
         else:
             writer.release()
             writer = None
+            if codec == "avc1":
+                print(f"[WARN] avc1/H264 codec not available, trying next codec...")
     
     if writer is None:
         raise RuntimeError("Failed to initialize video writer with any available codec")
@@ -417,7 +589,6 @@ def process_video_batch(
         writer.write(out)
 
         # ONLY call frame_callback if provided AND throttled.
-        # For batch processing, the user can disable preview entirely for max speed.
         if frame_callback:
             now = time.time()
             if now - last_frame_time >= 0.066:  # ~15 FPS preview cap
@@ -440,6 +611,10 @@ def process_video_batch(
 
     cap.release()
     writer.release()
+    
+    # Ensure the finished video is H.264-compatible for browser streaming
+    _ensure_h264_compatibility(output_path)
+    
     elapsed = time.time() - start_time
 
     return {
@@ -454,7 +629,6 @@ def process_video_batch(
         "last_queue_status": last_queue_status,
         "last_object_events": last_object_events,
     }
-
 
 # ---------------------------------------------------------------------------
 # Adaptive frame processing (for live streams)
@@ -534,25 +708,91 @@ with tab_live:
         up = st.file_uploader("Choose video file", type=["mp4", "avi", "mov"],
                               key="batch_uploader")
         if up:
-            # Save uploaded file
-            tf = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            tf.write(up.read())
-            tf.close()
-            input_path = tf.name
-            st.session_state["uploaded_video_path"] = input_path
+            # Save uploaded file to a PERSISTENT location (not temp that gets deleted)
+            data_dir = Path("data/uploads")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create a unique filename based on timestamp
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = f"{timestamp_str}_{up.name}"
+            input_path = str(data_dir / safe_name)
+            
+            # Save the uploaded file
+            with open(input_path, "wb") as f:
+                f.write(up.read())
+            
+            # Convert incompatible videos to OpenCV-compatible format
+            compatible_path = _ensure_opencv_compatible(input_path)
+            if compatible_path is not None and compatible_path != input_path:
+                # Use the converted version for OpenCV operations
+                st.session_state["uploaded_video_path"] = compatible_path
+                print(f"[INFO] Using re-encoded video for processing: {compatible_path}")
+            else:
+                st.session_state["uploaded_video_path"] = input_path
+            
+            # Extract and store the first frame for zone editor
+            first_frame = _extract_first_frame(compatible_path or input_path)
+            if first_frame is not None:
+                st.session_state["uploaded_video_first_frame"] = first_frame
+                # Save the first frame as a PNG for direct use in zone editor
+                data_dir.mkdir(parents=True, exist_ok=True)
+                frame_png_path = str(data_dir / "zone_editor_frame.png")
+                cv2.imwrite(frame_png_path, first_frame)
+                st.session_state["uploaded_video_first_frame_path"] = frame_png_path
+                print(f"[INFO] Saved first frame for zone editor: {input_path}")
+            else:
+                st.session_state["uploaded_video_first_frame"] = None
+                st.session_state["uploaded_video_first_frame_path"] = None
+                print(f"[WARN] Could not extract first frame from: {input_path}")
 
-            # Output path
-            output_path = tempfile.mktemp(suffix=".mp4", prefix="processed_")
+            # Output path - also in data directory for persistence
+            output_path = str(data_dir / f"processed_{timestamp_str}.mp4")
 
             # Show input info
-            cap_check = cv2.VideoCapture(input_path)
+            process_path = compatible_path or input_path
+            cap_check = cv2.VideoCapture(process_path)
             if cap_check.isOpened():
                 total = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
                 vid_fps = cap_check.get(cv2.CAP_PROP_FPS) or 25.0
                 dur = total / vid_fps if vid_fps > 0 else 0
                 st.info(f"📹 **{up.name}** — {total} frames, {vid_fps:.1f} FPS, "
                         f"{dur:.1f}s duration")
-            cap_check.release()
+                cap_check.release()
+            else:
+                cap_check.release()
+                # Try FFprobe to get video info as fallback
+                import subprocess, shutil
+                if shutil.which("ffprobe"):
+                    try:
+                        startupinfo = None
+                        if os.name == 'nt':
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        probe = subprocess.run([
+                            "ffprobe", "-v", "error",
+                            "-select_streams", "v:0",
+                            "-show_entries", "stream=nb_frames,r_frame_rate",
+                            "-of", "csv=p=0",
+                            process_path
+                        ], capture_output=True, text=True, startupinfo=startupinfo)
+                        if probe.stdout.strip():
+                            parts = probe.stdout.strip().split(",")
+                            if len(parts) >= 2:
+                                total_str, fps_str = parts[0], parts[1]
+                                total = int(float(total_str)) if total_str != "N/A" else 0
+                                if "/" in fps_str:
+                                    num, den = fps_str.split("/")
+                                    vid_fps = float(num) / float(den) if float(den) > 0 else 25.0
+                                else:
+                                    vid_fps = float(fps_str)
+                                dur = total / vid_fps if vid_fps > 0 else 0
+                                st.info(f"📹 **{up.name}** — {total} frames, {vid_fps:.1f} FPS, "
+                                        f"{dur:.1f}s duration")
+                    except Exception:
+                        pass
+                if not st.session_state.get("_video_info_shown"):
+                    st.info(f"📹 **{up.name}** — uploaded successfully")
+                    st.session_state["_video_info_shown"] = True
 
             # Zone loading
             cam_id = st.text_input("Camera ID for zone loading", value="v1",
@@ -645,20 +885,19 @@ with tab_live:
                     def on_frame(frame):
                         if not show_preview:
                             return
-                        # Only display every N frames to avoid saturating Streamlit
                         preview_counter["n"] += 1
                         if preview_counter["n"] % max(1, preview_every) != 0:
                             return
                         try:
-                            # Resize for faster display
                             small = cv2.resize(frame, (480, 270))
                             video_placeholder.image(small, channels="BGR", use_column_width=True)
                         except Exception:
                             pass
 
-                    # Run batch processing
+                    # Run batch processing using the compatible video path
+                    process_video_path = compatible_path or input_path
                     result = process_video_batch(
-                        video_path=input_path,
+                        video_path=process_video_path,
                         output_path=output_path,
                         det=det, trk=trk,
                         zones=zones, zA=zA, hm=hm, am=am,
@@ -676,7 +915,7 @@ with tab_live:
                     progress_bar.progress(1.0)
                     status_text.success("✅ Processing complete!")
 
-                    # Store results
+                    # Store results - KEEP PATHS FOR DISPLAY
                     st.session_state["processed_video_path"] = output_path
                     st.session_state["stats"] = [{
                         "fps": result["avg_fps"],
@@ -689,6 +928,8 @@ with tab_live:
                     st.session_state["activities_log"] = result["activities_log"]
                     st.session_state["zones"] = zones
                     st.session_state["zA"] = zA
+                    
+                    # DO NOT DELETE the input file - keep it for zone editor
 
                     # Show results
                     st.markdown("---")
@@ -700,40 +941,40 @@ with tab_live:
                     r4.metric("Footfall", result["total_footfall"])
 
                     # Show processed video
-                    # File-size aware: only stream inline if < 30MB to avoid
-                    # Cloudflare tunnel "stream canceled" errors on large media.
                     st.markdown("### 🎬 Processed Output")
                     try:
                         file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
                     except OSError:
                         file_size_mb = 0
-                    if file_size_mb < 30:
-                        st.success(
-                            f"📦 Output size: {file_size_mb:.1f} MB — streaming inline"
-                        )
-                        st.video(output_path)
+                    
+                    # Check if output file exists and is readable
+                    if os.path.exists(output_path) and file_size_mb > 0:
+                        # Try to stream inline, if fails show download directly
+                        try:
+                            if file_size_mb < 30:
+                                st.success(f"📦 Output size: {file_size_mb:.1f} MB — streaming inline")
+                                st.video(output_path)
+                            else:
+                                st.warning(f"📦 Output size: {file_size_mb:.1f} MB — too large to stream")
+                                st.video(output_path)
+                        except Exception as video_err:
+                            st.error(f"⚠️ Video cannot be streamed. Download directly below.")
+                            print(f"[WARN] Video streaming failed: {video_err}")
                     else:
-                        st.warning(
-                            f"📦 Output size: {file_size_mb:.1f} MB — too large to "
-                            f"stream through the tunnel. Use the download button "
-                            f"below to save it locally."
-                        )
+                        st.error(f"⚠️ Output video not found or empty. Path: {output_path}")
 
-                    # Download button (always available - works for any file size)
-                    with open(output_path, "rb") as f:
-                        st.download_button(
-                            "⬇️ Download Processed Video",
-                            f,
-                            file_name=f"processed_{up.name}",
-                            mime="video/mp4",
-                            use_container_width=True,
-                        )
-
-                    # Clean up input temp file
-                    try:
-                        os.unlink(input_path)
-                    except Exception:
-                        pass
+                    # Download button - ALWAYS show prominently
+                    if os.path.exists(output_path):
+                        with open(output_path, "rb") as f:
+                            st.download_button(
+                                "⬇️ Download Processed Video",
+                                f,
+                                file_name=f"processed_{up.name}",
+                                mime="video/mp4",
+                                use_container_width=True,
+                            )
+                    else:
+                        st.error("⚠️ Processed video file not available for download")
 
         else:
             st.info("👆 Upload a video file to begin batch processing")
@@ -1063,8 +1304,23 @@ with tab_live:
 
 # --- Tab: Zone Editor ---
 with tab_zones:
+    st.markdown("### 🗺️ Zone Editor")
+    st.caption("Define monitoring zones for tracking people in specific areas.")
+    
     cam_id = st.text_input("Camera ID", value="v1", key="zone_cam")
+    
+    # FIXED: Get video path from session state - check both uploaded path and first frame
     video_for_frame = st.session_state.get("uploaded_video_path")
+    first_frame = st.session_state.get("uploaded_video_first_frame")
+    
+    # Validate the path exists if set
+    if video_for_frame and not Path(video_for_frame).exists():
+        video_for_frame = None
+    
+    # If we have a first frame stored but no valid video path, use the frame directly
+    if first_frame is not None:
+        st.info("📹 Showing first frame from uploaded video for zone editing")
+    
     existing = []
     try:
         existing = load_zones(camera_id=cam_id)
@@ -1075,8 +1331,24 @@ with tab_zones:
             existing = load_zones(path=Path("config/zones.yaml"))
         except Exception:
             pass
-    result = render_polygon_editor(camera_id=cam_id, video_path=video_for_frame,
-                                   existing_zones=existing)
+    
+    # Pass the first frame to the polygon editor - save it as an image file
+    try:
+        if first_frame is not None:
+            # Save the first frame to a temp file that persists
+            data_dir = Path("data/uploads")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            frame_path = str(data_dir / "zone_editor_frame.png")
+            cv2.imwrite(frame_path, first_frame)
+            result = render_polygon_editor(camera_id=cam_id, video_path=frame_path,
+                                          existing_zones=existing)
+        else:
+            result = render_polygon_editor(camera_id=cam_id, video_path=video_for_frame,
+                                          existing_zones=existing)
+    except Exception as e:
+        st.error(f"Zone editor error: {e}")
+        st.info("Try switching to the Live tab first and upload a video, then return here.")
+        result = {"zones": existing or [], "saved_to": None}
     if result.get("saved_to"):
         st.success(f"Saved to {result['saved_to']}")
     st.markdown("---")
@@ -1186,3 +1458,25 @@ with tab_dash:
             st.markdown("### 🎥 Recent Clips")
             for c in clips[:5]:
                 st.markdown(f"- `{c.name}` ({c.stat().st_size // 1024} KB)")
+
+    # Show processed video in dashboard if available
+    processed_path = st.session_state.get("processed_video_path")
+    if processed_path and os.path.exists(processed_path):
+        st.markdown("---")
+        st.markdown("### 🎬 Processed Video (from last batch)")
+        try:
+            file_size_mb = os.path.getsize(processed_path) / (1024 * 1024)
+            st.info(f"📦 Video file size: {file_size_mb:.1f} MB")
+            st.video(processed_path)
+            
+            # Download button
+            with open(processed_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Download Processed Video",
+                    f,
+                    file_name="processed_video.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+        except Exception as e:
+            st.error(f"Could not load processed video: {e}")

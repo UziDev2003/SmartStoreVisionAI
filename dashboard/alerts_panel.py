@@ -85,8 +85,16 @@ def render(activities: List[SuspiciousActivity],
     if type_filter != "ALL":
         filtered = [a for a in filtered if a.activity_type.value == type_filter]
     if sev_filter != "ALL":
-        min_rank = SEVERITY_RANK[Severity(sev_filter)]
-        filtered = [a for a in filtered if SEVERITY_RANK[a.severity] >= min_rank]
+        # Handle both string and Severity enum for a.severity
+        def _get_severity_rank(sev):
+            if isinstance(sev, str):
+                try:
+                    sev = Severity(sev)
+                except (ValueError, KeyError):
+                    return 0
+            return SEVERITY_RANK.get(sev, 0)
+        min_rank = _get_severity_rank(sev_filter)
+        filtered = [a for a in filtered if _get_severity_rank(a.severity) >= min_rank]
     if cam_filter:
         filtered = [a for a in filtered if cam_filter.lower() in (a.camera_id or "").lower()]
     filtered = [a for a in filtered if a.confidence >= min_conf]

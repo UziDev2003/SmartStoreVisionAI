@@ -121,29 +121,9 @@ def _draw_zones_on_image(img: np.ndarray, zones: List[Zone],
 # ---------------------------------------------------------------------------
 # Image Click Editor (replaces the old text editor)
 # ---------------------------------------------------------------------------
-# Streamlit 1.36+ compatibility hack for streamlit-drawable-canvas 0.9.3
-try:
-    import streamlit.elements.image as st_image
-    def _mock_image_to_url(image, width, height, image_format, *args, **kwargs):
-        import io, base64
-        from PIL import Image
-        import numpy as np
-        buffered = io.BytesIO()
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        fmt = image_format.upper() if isinstance(image_format, str) else "PNG"
-        if fmt not in ["PNG", "JPEG", "GIF", "BMP", "WEBP"]:
-            fmt = "PNG"
-        image.save(buffered, format=fmt)
-        img_str = base64.b64encode(buffered.getvalue()).decode()
-        return f"data:image/{fmt.lower()};base64,{img_str}"
-    
-    st_image.image_to_url = _mock_image_to_url
-except Exception:
-    pass
-
 # Try to import the drawable canvas; fall back to a coordinate-based editor
 # if it's not installed (this is what was causing the image to not show)
+# Note: Canvas import is deferred to avoid SessionInfo initialization issues
 try:
     from streamlit_drawable_canvas import st_canvas
     _CANVAS_AVAILABLE = True
@@ -152,6 +132,28 @@ except Exception as _e:
     _CANVAS_AVAILABLE = False
     _CANVAS_ERROR = str(_e)
     st_canvas = None
+
+
+def _apply_canvas_compat_hack():
+    """
+    Apply Streamlit 1.36+ compatibility hack for streamlit-drawable-canvas 0.9.3.
+    Called lazily to avoid SessionInfo initialization issues.
+    """
+    try:
+        import streamlit.elements.image as st_image
+        if not hasattr(st_image, 'image_to_url') or st_image.image_to_url.__name__ != '_mock_image_to_url':
+            def _mock_image_to_url(image, width, clamp, channels, output_format, image_id):
+                from streamlit.elements.lib.layout_utils import LayoutConfig
+                from streamlit.elements.lib.image_utils import image_to_url as real_image_to_url
+                # Translate old signature arguments to the new LayoutConfig-based signature
+                layout_config = LayoutConfig(width=width)
+                url = real_image_to_url(image, layout_config, clamp, channels, output_format, image_id)
+                print(f"[DEBUG] _mock_image_to_url generated URL: {url}")
+                return url
+            
+            st_image.image_to_url = _mock_image_to_url
+    except Exception as e:
+        print(f"[DEBUG] Failed to apply canvas compat hack: {e}")
 
 
 def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],
@@ -201,6 +203,8 @@ def _render_image_editor(frame: np.ndarray, existing_zones: List[Zone],
 
     if _CANVAS_AVAILABLE:
         try:
+            _apply_canvas_compat_hack()
+            # Disable update_streamlit to prevent reload loops in some Streamlit versions
             canvas_result = st_canvas(
                 fill_color="rgba(255, 165, 0, 0.3)",
                 stroke_width=stroke_width,
@@ -312,7 +316,6 @@ def _render_coordinate_editor(frame: np.ndarray, existing_zones: List[Zone],
             )
             zones_final.append(zone)
             st.success(f"Added zone '{new_name}' with {len(pts)} vertices")
-            st.rerun()
 
     return zones_final
 
@@ -633,7 +636,8 @@ def render(camera_id="cam_01", video_path=None, existing_zones=None, on_save=Non
             st.session_state["_image_zones"] = []
         if "_temp_polygon" in st.session_state:
             st.session_state["_temp_polygon"] = {"points": [], "closed": False, "editing_zone_idx": None}
-        st.rerun()
+        st.session_state["_zones_cleared"] = True
+        st.toast("Zones cleared! Refreshing...")
 
     if load_runtime_clicked:
         loaded = load_zones(camera_id=cam)

@@ -77,9 +77,10 @@ class VideoClipper:
         self._frame_size = (w, h)
         out_path = self.output_dir / f"{alert_id}.mp4"
         
-        # Try codecs in order of compatibility: mp4v -> XVID -> MJPG
-        # Avoid H.265 which requires special FFmpeg builds on Windows
-        codec_priority = ["mp4v", "XVID", "MJPG"]
+        # Try codecs in order of compatibility: mp4v -> avc1 -> XVID -> MJPG
+        # mp4v is universally supported across all OpenCV builds
+        # avc1/H264 requires specific backends that may not be available
+        codec_priority = ["mp4v", "avc1", "XVID", "MJPG"]
         if self.codec in codec_priority:
             # Move current codec to front of priority list
             codecs_to_try = [self.codec] + [c for c in codec_priority if c != self.codec]

@@ -76,5 +76,5 @@ class ZoneAnalytics:
             c = colors.get(z.zone_type, (255,255,255)); pts = np.array(z.polygon, dtype=np.int32)
             ov = out.copy(); cv2.fillPoly(ov, [pts], (*c, 50)); cv2.addWeighted(ov, 0.3, out, 0.7, 0, out)
             cv2.polylines(out, [pts], True, c, 2)
-            cx, cy = z.get_center(); cv2.putText(out, f"{z.name}: {self.stats[zid].current_occupancy}", (cx-40, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
+            cx, cy = int(z.get_center()[0]), int(z.get_center()[1]); cv2.putText(out, f"{z.name}: {self.stats[zid].current_occupancy}", (cx-40, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
         return out
