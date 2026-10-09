@@ -9,10 +9,13 @@ echo "=================================================="
 echo "[1/4] Installing system dependencies (ffmpeg, opencv libs, tmux)..."
 apt-get update -qq && apt-get install -y -qq \
     ffmpeg libsm6 libxext6 libgl1 libglib2.0-0 git tmux psmisc > /dev/null 2>&1
+# Remove Debian-managed blinker to prevent pip uninstall error
+apt-get remove -y -qq python3-blinker > /dev/null 2>&1 || true
 
 # 2. Upgrade pip and install all Python requirements
 echo "[2/4] Installing all Python dependencies from requirements.txt..."
 python3 -m pip install --upgrade pip
+python3 -m pip install --ignore-installed blinker
 python3 -m pip install -r requirements.txt
 
 # 3. Configure Streamlit for RunPod proxy (disable CORS & XSRF)
